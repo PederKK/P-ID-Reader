@@ -29,6 +29,15 @@
                 Label: <code>TP-OTC DRAWING NUMBER</code>
             </div>
 
+            <div class="search-options" style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px;"><strong>Search Mode:</strong></label>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <label><input type="radio" name="searchMode" value="line" checked> Line Tags</label>
+                    <label><input type="radio" name="searchMode" value="valve"> Valve Tags</label>
+                    <label><input type="radio" name="searchMode" value="both"> Both</label>
+                </div>
+            </div>
+
             <div class="controls">
                 <input type="file" id="fileInput" accept="application/pdf">
                 <button id="export-btn" class="btn" onclick="exportToCSV()">Export CSV</button>
@@ -47,18 +56,22 @@
         <button id="open-sidebar-btn" class="btn-floating" onclick="toggleSidebar()" title="Open Sidebar">☰</button>
         <div id="zoom-toolbar">
             <span>Zoom:</span>
-            <input type="range" id="zoom-slider" min="0.5" max="3.0" step="0.1" value="1.0">
+            <input type="range" id="zoom-slider" min="0.2" max="3.0" step="0.1" value="1.0">
             <span id="zoom-value">100%</span>
         </div>
 
-        <div id="pdf-wrapper"></div>
+        <div id="zoom-container">
+            <div id="pdf-wrapper"></div>
+        </div>
     </div>
 
     <!-- Sticky Footer -->
-    <div id="sticky-footer">
-        <div class="footer-header">
+    <div id="sticky-footer" onclick="expandFooter()">
+        <div class="footer-header" onclick="collapseFooter(event)" title="Click to minimize">
             <span>Current Page Tags</span>
-            <button id="toggle-footer-btn" class="btn-toggle" onclick="toggleFooter()">Hide</button>
+            <button id="toggle-footer-btn" class="btn-icon">
+                <span style="font-size: 1.5rem; line-height: 0.5;">−</span>
+            </button>
         </div>
         <div id="footer-content">
             <ul class="result-list" id="footerList"></ul>

@@ -1,7 +1,10 @@
 // --- CONFIGURATION ---
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-const TAG_PATTERN = /\b\d+-\d+"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+\b/g;
+const LINE_TAG_PATTERN = /\b\d+-\d+"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+\b/g;
+const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-\d+\b/g;
+let activeTagPattern = LINE_TAG_PATTERN;
+
 const RENDER_SCALE = 2.0; 
 let allFoundTags = []; 
 let currentZoom = 1.0;
@@ -18,12 +21,105 @@ const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
 const footerList = document.getElementById('footerList');
 const stickyFooter = document.getElementById('sticky-footer');
+const viewerContainer = document.getElementById('viewer-container');
+const zoomContainer = document.getElementById('zoom-container'); // New container
 
 // Track current page for footer updates
 let currentPageNumber = 1;
 let pdfDoc = null; // Store global PDF reference
+let pdfContentWidth = 0; // Max width of pages
+let pdfContentHeight = 0; // Total height of pages
+
+// Panning Variables
+let isPanning = false;
+let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
+
+// --- PANNING CONTROLS ---
+viewerContainer.addEventListener('mousedown', (e) => {
+    // Only pan if left click and not on a highlight box or interactive element
+    if (e.button !== 0 || e.target.closest('.highlight-box') || e.target.closest('.btn-floating')) return;
+    
+    isPanning = true;
+    viewerContainer.classList.add('grabbing');
+    startX = e.pageX - viewerContainer.offsetLeft;
+    startY = e.pageY - viewerContainer.offsetTop;
+    scrollLeft = viewerContainer.scrollLeft;
+    scrollTop = viewerContainer.scrollTop;
+});
+
+viewerContainer.addEventListener('mouseleave', () => {
+    isPanning = false;
+    viewerContainer.classList.remove('grabbing');
+});
+
+viewerContainer.addEventListener('mouseup', () => {
+    isPanning = false;
+    viewerContainer.classList.remove('grabbing');
+});
+
+viewerContainer.addEventListener('mousemove', (e) => {
+    if (!isPanning) return;
+    e.preventDefault();
+    const x = e.pageX - viewerContainer.offsetLeft;
+    const y = e.pageY - viewerContainer.offsetTop;
+    const walkX = (x - startX) * 1.5; // Scroll-fast multiplier
+    const walkY = (y - startY) * 1.5;
+    viewerContainer.scrollLeft = scrollLeft - walkX;
+    viewerContainer.scrollTop = scrollTop - walkY;
+});
+
+// --- KEYBOARD & WHEEL CONTROLS ---
+document.addEventListener('keydown', (e) => {
+    // Zoom with + / -
+    if ((e.key === '+' || e.key === '=') && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        updateZoom(0.1);
+    } else if ((e.key === '-' || e.key === '_') && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        updateZoom(-0.1);
+    }
+    // Arrow keys for scrolling (if not focused on input)
+    else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        if (e.target.tagName === 'INPUT') return;
+        e.preventDefault();
+        const step = 50;
+        if (e.key === 'ArrowUp') viewerContainer.scrollTop -= step;
+        if (e.key === 'ArrowDown') viewerContainer.scrollTop += step;
+        if (e.key === 'ArrowLeft') viewerContainer.scrollLeft -= step;
+        if (e.key === 'ArrowRight') viewerContainer.scrollLeft += step;
+    }
+});
+
+viewerContainer.addEventListener('wheel', (e) => {
+    if (e.ctrlKey) {
+        e.preventDefault();
+        updateZoom(e.deltaY > 0 ? -0.1 : 0.1);
+    }
+}, { passive: false });
+
+function updateZoom(delta) {
+    let newZoom = parseFloat(currentZoom) + delta;
+    newZoom = Math.max(0.2, Math.min(newZoom, 3.0)); // Clamp between 0.2 and 3.0
+    
+    currentZoom = newZoom.toFixed(1);
+    zoomSlider.value = currentZoom;
+    applyZoom();
+}
+
+function applyZoom() {
+    zoomValue.textContent = Math.round(currentZoom * 100) + '%';
+    
+    // Scale the inner wrapper
+    pdfWrapper.style.transform = `scale(${currentZoom})`;
+    
+    // Resize the outer container to occupy the correct space
+    if (pdfContentWidth > 0 && pdfContentHeight > 0) {
+        zoomContainer.style.width = `${pdfContentWidth * currentZoom}px`;
+        zoomContainer.style.height = `${pdfContentHeight * currentZoom}px`;
+    }
+}
 
 // Scroll listener to update footer based on visible page
 document.getElementById('viewer-container').addEventListener('scroll', debounce(updateFooterForVisiblePage, 200));
@@ -47,11 +143,16 @@ function toggleInfoBox() {
     btn.textContent = infoBox.classList.contains('collapsed') ? 'Show Info' : 'Hide Info';
 }
 
-function toggleFooter() {
+function collapseFooter(e) {
+    e.stopPropagation(); 
+    document.getElementById('sticky-footer').classList.add('collapsed');
+}
+
+function expandFooter() {
     const footer = document.getElementById('sticky-footer');
-    const btn = document.getElementById('toggle-footer-btn');
-    footer.classList.toggle('collapsed');
-    btn.textContent = footer.classList.contains('collapsed') ? 'Show' : 'Hide';
+    if (footer.classList.contains('collapsed')) {
+        footer.classList.remove('collapsed');
+    }
 }
 
 function toggleSidebar() {
@@ -63,14 +164,23 @@ function toggleSidebar() {
 
 zoomSlider.addEventListener('input', (e) => {
     currentZoom = e.target.value;
-    zoomValue.textContent = Math.round(currentZoom * 100) + '%';
-    pdfWrapper.style.transform = `scale(${currentZoom})`;
-    pdfWrapper.style.transformOrigin = 'top center';
+    applyZoom();
 });
 
 async function handleFileUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
+
+    // Determine Search Mode
+    const searchMode = document.querySelector('input[name="searchMode"]:checked').value;
+    if (searchMode === 'valve') {
+        activeTagPattern = VALVE_TAG_PATTERN;
+    } else if (searchMode === 'both') {
+        // Combine patterns: Line tags first (more specific), then Valve tags
+        activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN.source, "g");
+    } else {
+        activeTagPattern = LINE_TAG_PATTERN;
+    }
 
     pdfWrapper.innerHTML = '';
     resultList.innerHTML = '';
@@ -80,9 +190,10 @@ async function handleFileUpload(e) {
     statusBar.textContent = 'Loading P&ID...';
     spinner.style.display = 'block';
 
-    currentZoom = 1.0;
-    zoomSlider.value = 1.0;
-    pdfWrapper.style.transform = 'scale(1)';
+    // Set initial zoom to 0.8 (80%) which is usually a good fit for 2.0 render scale
+    currentZoom = 0.8;
+    zoomSlider.value = currentZoom;
+    applyZoom();
 
     try {
         const arrayBuffer = await file.arrayBuffer();
@@ -92,10 +203,20 @@ async function handleFileUpload(e) {
         statusBar.textContent = `Scanning ${pdfDoc.numPages} sheets...`;
 
         let totalMatches = 0;
+        pdfContentWidth = 0;
+        pdfContentHeight = 0;
+
         for (let i = 1; i <= pdfDoc.numPages; i++) {
             const matchesOnPage = await processPage(pdfDoc, i);
             totalMatches += matchesOnPage;
         }
+        
+        // Set initial dimensions for the wrapper
+        pdfWrapper.style.width = `${pdfContentWidth}px`;
+        pdfWrapper.style.height = `${pdfContentHeight}px`;
+        
+        // Re-apply zoom to set container size
+        applyZoom();
 
         statusBar.textContent = `Audit Complete. Found ${totalMatches} tags.`;
         if (totalMatches > 0) {
@@ -120,6 +241,10 @@ async function processPage(pdf, pageNumber) {
     pageDiv.style.width = `${viewport.width}px`;
     pageDiv.style.height = `${viewport.height}px`;
     pageDiv.id = `page-${pageNumber}`;
+    
+    // Track dimensions
+    pdfContentWidth = Math.max(pdfContentWidth, viewport.width);
+    pdfContentHeight += viewport.height + 20; // +20 for margin-bottom
 
     const canvas = document.createElement('canvas');
     canvas.width = viewport.width;
@@ -170,10 +295,10 @@ async function processPage(pdf, pageNumber) {
     let matchesCount = 0;
     for (const item of textContent.items) {
         const text = item.str;
-        TAG_PATTERN.lastIndex = 0;
+        activeTagPattern.lastIndex = 0;
         let match;
 
-        while ((match = TAG_PATTERN.exec(text)) !== null) {
+        while ((match = activeTagPattern.exec(text)) !== null) {
             matchesCount++;
             const matchText = match[0];
 
@@ -250,26 +375,24 @@ function updateFooterList(pageNum) {
     }
 
     pageTags.forEach(item => {
-        // Clone the logic from addSidebarItem but append to footer
         const li = document.createElement('li');
-        li.className = 'result-item';
-        if (item.status === 'Correct') li.classList.add('status-correct'); // Optional styling
+        li.className = 'footer-tag-item';
+        if (item.status === 'Correct') li.classList.add('status-correct');
+        if (item.status === 'Incorrect') li.classList.add('status-incorrect');
 
         li.innerHTML = `
-            <div class="item-info">
-                <span class="tag-text">${item.tag}</span>
-                <div class="tag-meta">Status: ${item.status}</div>
-            </div>
-            <div class="review-actions">
-                <button class="btn-review correct ${item.status === 'Correct' ? 'active' : ''}" 
-                    onclick="setStatus(event, ${item.id}, 'Correct', this)">&#10003;</button>
-                <button class="btn-review incorrect ${item.status === 'Incorrect' ? 'active' : ''}" 
-                    onclick="setStatus(event, ${item.id}, 'Incorrect', this)">&#10007;</button>
+            <span class="footer-tag-text">${item.tag}</span>
+            <div class="footer-actions">
+                <button class="btn-mini correct" title="Approve" onclick="setStatus(event, ${item.id}, 'Correct', this)">✓</button>
+                <button class="btn-mini incorrect" title="Reject" onclick="setStatus(event, ${item.id}, 'Incorrect', this)">✗</button>
             </div>
         `;
         
         // Sync selection
-        li.addEventListener('click', () => {
+        li.addEventListener('click', (e) => {
+            // Prevent triggering if clicking buttons
+            if (e.target.tagName === 'BUTTON') return;
+
             // Trigger click on main list item to handle scrolling/highlighting
             const mainLi = resultList.children[item.id]; 
             if(mainLi) mainLi.click();
