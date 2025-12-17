@@ -8,6 +8,7 @@ let activeTagPattern = LINE_TAG_PATTERN;
 const RENDER_SCALE = 2.0; 
 let allFoundTags = []; 
 let currentZoom = 1.0;
+let currentPdfBytes = null;
 
 // DOM Elements
 const fileInput = document.getElementById('fileInput');
@@ -196,8 +197,9 @@ async function handleFileUpload(e) {
     applyZoom();
 
     try {
-        const arrayBuffer = await file.arrayBuffer();
-        const loadingTask = pdfjsLib.getDocument(arrayBuffer);
+        const fileBuffer = await file.arrayBuffer();
+        currentPdfBytes = fileBuffer.slice(0); // Clone for saving
+        const loadingTask = pdfjsLib.getDocument(fileBuffer);
         pdfDoc = await loadingTask.promise; // Store globally
 
         statusBar.textContent = `Scanning ${pdfDoc.numPages} sheets...`;
@@ -325,8 +327,37 @@ async function processPage(pdf, pageNumber) {
             highlight.style.height = `${fontHeight}px`;
             highlight.style.transform = `rotate(${angleDeg}deg) translateY(-100%)`;
 
+            // --- PDF COORDINATE CALCULATION FOR PRINTING ---
+            // Calculate PDF coordinates for printing
+            const pdfTotalWidth = item.width; 
+            const pdfMatchWidth = pdfTotalWidth * matchRatio;
+            const pdfOffsetRatio = match.index / text.length;
+            const pdfOffsetX = pdfTotalWidth * pdfOffsetRatio;
+            
+            // Rotation angle from transform (PDF space)
+            const pdfAngleRad = Math.atan2(item.transform[1], item.transform[0]);
+            const pdfAngleDeg = pdfAngleRad * (180 / Math.PI);
+            
+            // Calculate offset vector (x, y)
+            const offsetX = pdfOffsetX * Math.cos(pdfAngleRad);
+            const offsetY = pdfOffsetX * Math.sin(pdfAngleRad);
+            
+            const pdfX = item.transform[4] + offsetX;
+            const pdfY = item.transform[5] + offsetY;
+            
+            // Height in PDF units
+            const pdfHeight = Math.sqrt(item.transform[2]*item.transform[2] + item.transform[3]*item.transform[3]);
+
+            const pdfRect = {
+                x: pdfX,
+                y: pdfY,
+                width: pdfMatchWidth,
+                height: pdfHeight,
+                rotation: pdfAngleDeg
+            };
+
             pageDiv.appendChild(highlight);
-            addSidebarItem(matchText, pageNumber, sheetTitle, highlight);
+            addSidebarItem(matchText, pageNumber, sheetTitle, highlight, pdfRect);
         }
     }
     
@@ -402,7 +433,7 @@ function updateFooterList(pageNum) {
     });
 }
 
-function addSidebarItem(text, pageNum, title, highlightElement) {
+function addSidebarItem(text, pageNum, title, highlightElement, pdfRect) {
     const id = allFoundTags.length;
 
     allFoundTags.push({ 
@@ -411,7 +442,8 @@ function addSidebarItem(text, pageNum, title, highlightElement) {
         page: pageNum, 
         title: title,
         status: 'Pending',
-        element: highlightElement
+        element: highlightElement,
+        pdfRect: pdfRect
     });
 
     const li = document.createElement('li');
@@ -498,7 +530,11 @@ function updateStatusUI(id, newStatus) {
 }
 
 function printPDF() {
-    window.print();
+    if (typeof saveAnnotatedPDF === 'function') {
+        saveAnnotatedPDF(currentPdfBytes, allFoundTags);
+    } else {
+        window.print();
+    }
 }
 
 function exportToCSV() {

@@ -55,7 +55,7 @@ body.sidebar-collapsed #sticky-footer {
 .btn-icon:hover { color: #333; }
 
 .btn-floating {
-    position: absolute;
+    position: fixed;
     top: 20px;
     left: 20px;
     z-index: 150;
