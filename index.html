@@ -18,36 +18,55 @@
     <!-- Sidebar -->
     <div id="sidebar">
         <div class="sidebar-header">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="header-top">
                 <h1>P&ID Auditor</h1>
                 <button id="close-sidebar-btn" class="btn-icon" onclick="toggleSidebar()" title="Close Sidebar">✕</button>
             </div>
-            <button id="toggle-info-btn" class="btn-toggle" onclick="toggleInfoBox()">Hide Info</button>
-
-            <div id="info-box" class="logic-box">
-                <strong>Tag Search:</strong><br>
-                <code>Digits - Digits" - Letters - Alphanum - Digits - Letters</code><br><br>
-                <strong>Title Search:</strong><br>
-                Label: <code>TP-OTC DRAWING NUMBER</code>
-            </div>
-
-            <div class="search-options" style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 5px;"><strong>Search Mode SAK3:</strong></label>
-                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                    <label><input type="radio" name="searchMode" value="line" checked> Line Tags</label>
-                    <label><input type="radio" name="searchMode" value="valve"> Valve Tags</label>
-                    <label><input type="radio" name="searchMode" value="both"> Both</label>
+            
+            <div class="info-section">
+                 <button id="toggle-info-btn" class="btn-toggle" onclick="toggleInfoBox()">Hide info</button>
+                 <div id="info-box" class="logic-box">
+                    <div class="info-item">
+                        <strong>Tag Search:</strong>
+                        <p>Digits - Digits - Letters - Alphanum - Digits - Letters</p>
+                    </div>
+                    <div class="info-item">
+                        <strong>Title Search:</strong>
+                        <p>Label: TP-OTC DRAWING NUMBER</p>
+                    </div>
                 </div>
             </div>
 
-            <div class="controls">
-                <input type="file" id="fileInput" accept="application/pdf">
-                <button id="export-btn" class="btn" onclick="exportToCSV()">Export CSV</button>
-                <button id="print-btn" class="btn" onclick="printPDF()">Print / Save PDF</button>
+            <div class="search-section card">
+                <label class="section-title">Search Mode SAk3:</label>
+                <div class="radio-group">
+                    <label class="radio-label"><input type="radio" name="searchMode" value="line" checked> <span class="icon">⬇️</span> Line Tags</label>
+                    <label class="radio-label"><input type="radio" name="searchMode" value="valve"> <span class="icon">🔒</span> Valve Tags</label>
+                    <label class="radio-label"><input type="radio" name="searchMode" value="both"> <span class="icon">🌊</span> Both</label>
+                </div>
+                <div class="file-input-wrapper">
+                     <label for="fileInput" class="file-label">
+                        <span class="icon">📄</span> <span id="fileName">New Document.pdf</span>
+                     </label>
+                     <input type="file" id="fileInput" accept="application/pdf" onchange="updateFileName(this)">
+                </div>
             </div>
-            <div id="status-bar">Waiting for P&ID...</div>
-            <div class="spinner" id="spinner"></div>
+
+            <div class="action-buttons">
+                <button id="export-btn" class="btn btn-primary" onclick="exportToCSV()">
+                    <span class="icon">📥</span> Export CSV
+                </button>
+                <button id="print-btn" class="btn btn-secondary" onclick="printPDF()">
+                    <span class="icon">🖨️</span> Print / Save PDF
+                </button>
+            </div>
+            
+            <div class="status-section">
+                <div id="status-bar">Audit Complete. Found 0 tags.</div>
+                <div class="spinner" id="spinner"></div>
+            </div>
         </div>
+        
         <div id="results-container">
             <ul class="result-list" id="resultList"></ul>
         </div>

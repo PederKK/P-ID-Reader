@@ -222,8 +222,8 @@ async function handleFileUpload(e) {
 
         statusBar.textContent = `Audit Complete. Found ${totalMatches} tags.`;
         if (totalMatches > 0) {
-            exportBtn.style.display = 'block';
-            printBtn.style.display = 'block';
+            exportBtn.style.display = 'flex';
+            printBtn.style.display = 'flex';
         }
 
     } catch (err) {
@@ -452,14 +452,12 @@ function addSidebarItem(text, pageNum, title, highlightElement, pdfRect) {
     li.innerHTML = `
         <div class="item-info">
             <span class="tag-text">${text}</span>
-            <div class="tag-meta">
-                <span class="tag-title">${title}</span> <br>
-                Page ${pageNum}
-            </div>
+            <span class="tag-meta">${title}</span>
+            <span class="tag-page">Page ${pageNum}</span>
         </div>
         <div class="review-actions">
-            <button class="btn-review correct" title="Approve" onclick="setStatus(event, ${id}, 'Correct', this)">&#10003;</button>
-            <button class="btn-review incorrect" title="Reject" onclick="setStatus(event, ${id}, 'Incorrect', this)">&#10007;</button>
+            <button class="btn-review correct" title="Approve" onclick="setStatus(event, ${id}, 'Correct', this)">✓</button>
+            <button class="btn-review incorrect" title="Reject" onclick="setStatus(event, ${id}, 'Incorrect', this)">✕</button>
         </div>
     `;
 
@@ -557,4 +555,13 @@ function exportToCSV() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+}
+
+function updateFileName(input) {
+    const fileNameSpan = document.getElementById('fileName');
+    if (input.files && input.files.length > 0) {
+        fileNameSpan.textContent = input.files[0].name;
+    } else {
+        fileNameSpan.textContent = "New Document.pdf";
+    }
 }
