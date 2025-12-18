@@ -1,8 +1,24 @@
 // --- CONFIGURATION ---
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
+// Line tag patterns (original first as the canonical reference)
+// Original example: 10-2"-HC-1234-01-A
 const LINE_TAG_PATTERN = /\b\d+-\d+"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+\b/g;
+
+// Alternate line size formats to support fractions/decimals like:
+// 35-1.1/2"-RM-A06A1-5532-ET
+// 35-3/4"-CI-A04A1-9506-N
+// Size token here allows: 2", 3/4", 1.1/2" (digits + optional .digits + optional /digits)
+const LINE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+\b/g;
+
+// Valve tag patterns (original first as the canonical reference)
+// Original example: 35-2"-A2R-9008 OR 35-A2R-9008
 const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-\d+\b/g;
+
+// Alternate valve size formats to support fractions/decimals like:
+// 35-1.1/2"-A2R-9008
+// 35-3/4"-B2R-9055
+const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-\d+\b/g;
 let activeTagPattern = LINE_TAG_PATTERN;
 
 const RENDER_SCALE = 2.0; 
@@ -29,6 +45,7 @@ const footerList = document.getElementById('footerList');
 const stickyFooter = document.getElementById('sticky-footer');
 const viewerContainer = document.getElementById('viewer-container');
 const zoomContainer = document.getElementById('zoom-container'); // New container
+const searchBtn = document.getElementById('search-btn');
 
 // Track current page for footer updates
 let currentPageNumber = 1;
@@ -41,16 +58,6 @@ let isPanning = false;
 let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
-
-// Duplicate mode toggle (sidebar/CSV only)
-document.querySelectorAll('input[name="dupMode"]').forEach(radio => {
-    radio.addEventListener('change', () => {
-        duplicateMode = document.querySelector('input[name="dupMode"]:checked')?.value || 'occurrences';
-        rebuildSidebar();
-        updateFooterList(currentPageNumber);
-        updateStatusBarCounts();
-    });
-});
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -186,23 +193,53 @@ zoomSlider.addEventListener('input', (e) => {
 async function handleFileUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
+    // Keep current behavior: auto-run when a file is selected
+    await runAudit(file);
+}
 
-    // Determine Search Mode
-    const searchMode = document.querySelector('input[name="searchMode"]:checked').value;
+// Exposed for the Search button (index.html onclick)
+async function runSearch() {
+    const file = fileInput?.files?.[0];
+    if (!file) {
+        alert('Please choose a PDF first.');
+        return;
+    }
+    await runAudit(file);
+}
+
+async function runAudit(file) {
+    // Determine Search Mode (read current radio selection each run)
+    const searchMode = document.querySelector('input[name="searchMode"]:checked')?.value || 'line';
     if (searchMode === 'valve') {
-        activeTagPattern = VALVE_TAG_PATTERN;
+        // Valve-only: check original first, then alternate
+        activeTagPattern = new RegExp(VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source, "g");
     } else if (searchMode === 'both') {
-        // Combine patterns: Line tags first (more specific), then Valve tags
-        activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN.source, "g");
+        // Combine patterns:
+        // 1) Original line pattern (canonical reference)
+        // 2) Alternate line pattern (fractions/decimals)
+        // 3) Original valve pattern (canonical reference)
+        // 4) Alternate valve pattern (fractions/decimals)
+        activeTagPattern = new RegExp(
+            LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source + "|" + VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source,
+            "g"
+        );
     } else {
-        activeTagPattern = LINE_TAG_PATTERN;
+        // Line-only: check original first, then alternate
+        activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source, "g");
     }
 
+    // Reset UI/state so repeated searches don't require a refresh
     pdfWrapper.innerHTML = '';
     resultList.innerHTML = '';
+    footerList.innerHTML = '';
     allFoundTags = [];
+    currentPageNumber = 1;
     exportBtn.style.display = 'none';
     printBtn.style.display = 'none';
+
+    // Busy UI
+    if (searchBtn) searchBtn.disabled = true;
+    fileInput.disabled = true;
     statusBar.textContent = 'Loading P&ID...';
     spinner.style.display = 'block';
 
@@ -227,11 +264,11 @@ async function handleFileUpload(e) {
             const matchesOnPage = await processPage(pdfDoc, i);
             totalMatches += matchesOnPage;
         }
-        
+
         // Set initial dimensions for the wrapper
         pdfWrapper.style.width = `${pdfContentWidth}px`;
         pdfWrapper.style.height = `${pdfContentHeight}px`;
-        
+
         // Re-apply zoom to set container size
         applyZoom();
 
@@ -247,173 +284,9 @@ async function handleFileUpload(e) {
         statusBar.textContent = 'Error: ' + err.message;
     } finally {
         spinner.style.display = 'none';
+        fileInput.disabled = false;
+        if (searchBtn) searchBtn.disabled = false;
     }
-}
-
-function updateStatusBarCounts(totalOccurrences) {
-    const occurrences = typeof totalOccurrences === 'number' ? totalOccurrences : allFoundTags.length;
-    const unique = new Set(allFoundTags.map(t => t.tag)).size;
-
-    const current = statusBar.textContent || '';
-    if (/^Error:|^Loading|^Scanning/i.test(current)) return;
-
-    if (duplicateMode === 'unique') {
-        statusBar.textContent = `Audit Complete. Found ${unique} unique tags (${occurrences} occurrences).`;
-    } else {
-        statusBar.textContent = `Audit Complete. Found ${occurrences} tags.`;
-    }
-}
-
-function createGroupedView(tags) {
-    const map = new Map();
-    for (const t of tags) {
-        const key = t.tag;
-        if (!map.has(key)) {
-            map.set(key, {
-                tag: key,
-                occurrences: [],
-                titles: new Set(),
-                pages: new Set(),
-                status: 'Pending'
-            });
-        }
-        const g = map.get(key);
-        g.occurrences.push(t);
-        if (t.title) g.titles.add(t.title);
-        g.pages.add(t.page);
-    }
-
-    const groups = Array.from(map.values());
-    for (const g of groups) {
-        const statuses = new Set(g.occurrences.map(o => o.status));
-        if (statuses.has('Incorrect')) g.status = 'Incorrect';
-        else if (statuses.size === 1 && statuses.has('Correct')) g.status = 'Correct';
-        else g.status = 'Pending';
-    }
-
-    groups.sort((a, b) => a.tag.localeCompare(b.tag));
-    return groups;
-}
-
-function updateStatusButtonsForContainer(container, newStatus) {
-    if (!container) return;
-    const correctBtn = container.querySelector('.correct');
-    const incorrectBtn = container.querySelector('.incorrect');
-
-    if (newStatus === 'Correct') {
-        correctBtn?.classList.add('active');
-        incorrectBtn?.classList.remove('active');
-    } else if (newStatus === 'Incorrect') {
-        incorrectBtn?.classList.add('active');
-        correctBtn?.classList.remove('active');
-    } else {
-        correctBtn?.classList.remove('active');
-        incorrectBtn?.classList.remove('active');
-    }
-}
-
-function setStatusInternal(id, newStatus) {
-    const item = allFoundTags[id];
-    if (!item) return;
-    item.status = newStatus;
-    updateStatusUI(id, newStatus);
-}
-
-function rebuildSidebar() {
-    resultList.innerHTML = '';
-    if (allFoundTags.length === 0) return;
-
-    if (duplicateMode === 'unique') {
-        const groups = createGroupedView(allFoundTags);
-        groups.forEach(group => {
-            const li = document.createElement('li');
-            li.className = 'result-item';
-            if (group.status === 'Correct') li.classList.add('status-correct');
-            if (group.status === 'Incorrect') li.classList.add('status-incorrect');
-
-            const pages = Array.from(group.pages).sort((a, b) => a - b);
-            const titles = Array.from(group.titles);
-            const metaTitle = titles.length === 1 ? titles[0] : (titles.length > 1 ? `${titles[0]} (+${titles.length - 1} more)` : '');
-            const pageLabel = pages.length === 1 ? `Page ${pages[0]}` : `Pages ${pages.join(', ')}`;
-            const countLabel = `${group.occurrences.length}x`;
-
-            li.innerHTML = `
-                <div class="item-info">
-                    <span class="tag-text">${group.tag} <span class="tag-count">(${countLabel})</span></span>
-                    <span class="tag-meta">${metaTitle}</span>
-                    <span class="tag-page">${pageLabel}</span>
-                </div>
-                <div class="review-actions">
-                    <button class="btn-review correct" title="Approve all">✓</button>
-                    <button class="btn-review incorrect" title="Reject all">✕</button>
-                </div>
-            `;
-
-            li.addEventListener('click', (e) => {
-                if (e.target?.tagName === 'BUTTON') return;
-                document.querySelectorAll('.result-item').forEach(i => i.classList.remove('selected'));
-                li.classList.add('selected');
-                const occ = group.occurrences[0];
-                if (!occ?.element) return;
-                document.querySelectorAll('.highlight-box').forEach(h => h.classList.remove('focused'));
-                occ.element.classList.add('focused');
-                occ.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-            });
-
-            li.querySelector('.btn-review.correct')?.addEventListener('click', (ev) => {
-                ev.stopPropagation();
-                group.occurrences.forEach(o => setStatusInternal(o.id, 'Correct'));
-                rebuildSidebar();
-                updateFooterList(currentPageNumber);
-            });
-            li.querySelector('.btn-review.incorrect')?.addEventListener('click', (ev) => {
-                ev.stopPropagation();
-                group.occurrences.forEach(o => setStatusInternal(o.id, 'Incorrect'));
-                rebuildSidebar();
-                updateFooterList(currentPageNumber);
-            });
-
-            resultList.appendChild(li);
-        });
-        return;
-    }
-
-    // occurrences mode
-    allFoundTags.forEach(item => {
-        const li = document.createElement('li');
-        li.className = 'result-item';
-        li.innerHTML = `
-            <div class="item-info">
-                <span class="tag-text">${item.tag}</span>
-                <span class="tag-meta">${item.title}</span>
-                <span class="tag-page">Page ${item.page}</span>
-            </div>
-            <div class="review-actions">
-                <button class="btn-review correct" title="Approve">✓</button>
-                <button class="btn-review incorrect" title="Reject">✕</button>
-            </div>
-        `;
-
-        li.addEventListener('click', () => {
-            document.querySelectorAll('.result-item').forEach(i => i.classList.remove('selected'));
-            li.classList.add('selected');
-            document.querySelectorAll('.highlight-box').forEach(h => h.classList.remove('focused'));
-            item.element.classList.add('focused');
-            item.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-        });
-
-        li.querySelector('.btn-review.correct')?.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            setStatusInternal(item.id, 'Correct');
-        });
-        li.querySelector('.btn-review.incorrect')?.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            setStatusInternal(item.id, 'Incorrect');
-        });
-
-        updateStatusButtonsForContainer(li, item.status);
-        resultList.appendChild(li);
-    });
 }
 
 async function processPage(pdf, pageNumber) {
