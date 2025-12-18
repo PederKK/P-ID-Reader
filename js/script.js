@@ -1,8 +1,24 @@
 // --- CONFIGURATION ---
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
+// Line tag patterns (original first as the canonical reference)
+// Original example: 10-2"-HC-1234-01-A
 const LINE_TAG_PATTERN = /\b\d+-\d+"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+\b/g;
+
+// Alternate line size formats to support fractions/decimals like:
+// 35-1.1/2"-RM-A06A1-5532-ET
+// 35-3/4"-CI-A04A1-9506-N
+// Size token here allows: 2", 3/4", 1.1/2" (digits + optional .digits + optional /digits)
+const LINE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+\b/g;
+
+// Valve tag patterns (original first as the canonical reference)
+// Original example: 35-2"-A2R-9008 OR 35-A2R-9008
 const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-\d+\b/g;
+
+// Alternate valve size formats to support fractions/decimals like:
+// 35-1.1/2"-A2R-9008
+// 35-3/4"-B2R-9055
+const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-\d+\b/g;
 let activeTagPattern = LINE_TAG_PATTERN;
 
 const RENDER_SCALE = 2.0; 
@@ -24,6 +40,7 @@ const footerList = document.getElementById('footerList');
 const stickyFooter = document.getElementById('sticky-footer');
 const viewerContainer = document.getElementById('viewer-container');
 const zoomContainer = document.getElementById('zoom-container'); // New container
+const searchBtn = document.getElementById('search-btn');
 
 // Track current page for footer updates
 let currentPageNumber = 1;
@@ -36,6 +53,11 @@ let isPanning = false;
 let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
+
+// Allow running a new search without reloading the page
+if (searchBtn) {
+    searchBtn.addEventListener('click', () => runSearch());
+}
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -171,23 +193,53 @@ zoomSlider.addEventListener('input', (e) => {
 async function handleFileUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
+    // Keep current behavior: auto-run when a file is selected
+    await runAudit(file);
+}
 
-    // Determine Search Mode
-    const searchMode = document.querySelector('input[name="searchMode"]:checked').value;
+// Exposed for the Search button (index.html onclick)
+async function runSearch() {
+    const file = fileInput?.files?.[0];
+    if (!file) {
+        alert('Please choose a PDF first.');
+        return;
+    }
+    await runAudit(file);
+}
+
+async function runAudit(file) {
+    // Determine Search Mode (read current radio selection each run)
+    const searchMode = document.querySelector('input[name="searchMode"]:checked')?.value || 'line';
     if (searchMode === 'valve') {
-        activeTagPattern = VALVE_TAG_PATTERN;
+        // Valve-only: check original first, then alternate
+        activeTagPattern = new RegExp(VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source, "g");
     } else if (searchMode === 'both') {
-        // Combine patterns: Line tags first (more specific), then Valve tags
-        activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN.source, "g");
+        // Combine patterns:
+        // 1) Original line pattern (canonical reference)
+        // 2) Alternate line pattern (fractions/decimals)
+        // 3) Original valve pattern (canonical reference)
+        // 4) Alternate valve pattern (fractions/decimals)
+        activeTagPattern = new RegExp(
+            LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source + "|" + VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source,
+            "g"
+        );
     } else {
-        activeTagPattern = LINE_TAG_PATTERN;
+        // Line-only: check original first, then alternate
+        activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source, "g");
     }
 
+    // Reset UI/state so repeated searches don't require a refresh
     pdfWrapper.innerHTML = '';
     resultList.innerHTML = '';
+    footerList.innerHTML = '';
     allFoundTags = [];
+    currentPageNumber = 1;
     exportBtn.style.display = 'none';
     printBtn.style.display = 'none';
+
+    // Busy UI
+    if (searchBtn) searchBtn.disabled = true;
+    fileInput.disabled = true;
     statusBar.textContent = 'Loading P&ID...';
     spinner.style.display = 'block';
 
@@ -212,11 +264,11 @@ async function handleFileUpload(e) {
             const matchesOnPage = await processPage(pdfDoc, i);
             totalMatches += matchesOnPage;
         }
-        
+
         // Set initial dimensions for the wrapper
         pdfWrapper.style.width = `${pdfContentWidth}px`;
         pdfWrapper.style.height = `${pdfContentHeight}px`;
-        
+
         // Re-apply zoom to set container size
         applyZoom();
 
@@ -231,8 +283,13 @@ async function handleFileUpload(e) {
         statusBar.textContent = 'Error: ' + err.message;
     } finally {
         spinner.style.display = 'none';
+        fileInput.disabled = false;
+        if (searchBtn) searchBtn.disabled = false;
     }
 }
+
+// Make runSearch callable from inline HTML onclick
+window.runSearch = runSearch;
 
 async function processPage(pdf, pageNumber) {
     const page = await pdf.getPage(pageNumber);
