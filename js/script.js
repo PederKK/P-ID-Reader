@@ -40,6 +40,7 @@ const footerList = document.getElementById('footerList');
 const stickyFooter = document.getElementById('sticky-footer');
 const viewerContainer = document.getElementById('viewer-container');
 const zoomContainer = document.getElementById('zoom-container'); // New container
+const searchBtn = document.getElementById('search-btn');
 
 // Track current page for footer updates
 let currentPageNumber = 1;
@@ -52,6 +53,11 @@ let isPanning = false;
 let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
+
+// Allow running a new search without reloading the page
+if (searchBtn) {
+    searchBtn.addEventListener('click', () => runSearch());
+}
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -187,9 +193,23 @@ zoomSlider.addEventListener('input', (e) => {
 async function handleFileUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
+    // Keep current behavior: auto-run when a file is selected
+    await runAudit(file);
+}
 
-    // Determine Search Mode
-    const searchMode = document.querySelector('input[name="searchMode"]:checked').value;
+// Exposed for the Search button (index.html onclick)
+async function runSearch() {
+    const file = fileInput?.files?.[0];
+    if (!file) {
+        alert('Please choose a PDF first.');
+        return;
+    }
+    await runAudit(file);
+}
+
+async function runAudit(file) {
+    // Determine Search Mode (read current radio selection each run)
+    const searchMode = document.querySelector('input[name="searchMode"]:checked')?.value || 'line';
     if (searchMode === 'valve') {
         // Valve-only: check original first, then alternate
         activeTagPattern = new RegExp(VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source, "g");
@@ -208,11 +228,18 @@ async function handleFileUpload(e) {
         activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source, "g");
     }
 
+    // Reset UI/state so repeated searches don't require a refresh
     pdfWrapper.innerHTML = '';
     resultList.innerHTML = '';
+    footerList.innerHTML = '';
     allFoundTags = [];
+    currentPageNumber = 1;
     exportBtn.style.display = 'none';
     printBtn.style.display = 'none';
+
+    // Busy UI
+    if (searchBtn) searchBtn.disabled = true;
+    fileInput.disabled = true;
     statusBar.textContent = 'Loading P&ID...';
     spinner.style.display = 'block';
 
@@ -237,11 +264,11 @@ async function handleFileUpload(e) {
             const matchesOnPage = await processPage(pdfDoc, i);
             totalMatches += matchesOnPage;
         }
-        
+
         // Set initial dimensions for the wrapper
         pdfWrapper.style.width = `${pdfContentWidth}px`;
         pdfWrapper.style.height = `${pdfContentHeight}px`;
-        
+
         // Re-apply zoom to set container size
         applyZoom();
 
@@ -256,8 +283,13 @@ async function handleFileUpload(e) {
         statusBar.textContent = 'Error: ' + err.message;
     } finally {
         spinner.style.display = 'none';
+        fileInput.disabled = false;
+        if (searchBtn) searchBtn.disabled = false;
     }
 }
+
+// Make runSearch callable from inline HTML onclick
+window.runSearch = runSearch;
 
 async function processPage(pdf, pageNumber) {
     const page = await pdf.getPage(pageNumber);
