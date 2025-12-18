@@ -23,47 +23,71 @@
                 <button id="close-sidebar-btn" class="btn-icon" onclick="toggleSidebar()" title="Close Sidebar">✕</button>
             </div>
             
-            <div class="info-section">
-                 <button id="toggle-info-btn" class="btn-toggle" onclick="toggleInfoBox()">Hide info</button>
-                 <div id="info-box" class="logic-box">
-                    <div class="info-item">
-                        <strong>Tag Search:</strong>
-                        <p>Digits - Digits - Letters - Alphanum - Digits - Letters</p>
+            <div class="sidebar-sections">
+                <section class="sidebar-section">
+                    <div class="section-header">
+                        <div class="section-title">Search help</div>
+                        <button id="toggle-info-btn" class="btn-toggle" onclick="toggleInfoBox()">Hide</button>
                     </div>
-                    <div class="info-item">
-                        <strong>Title Search:</strong>
-                        <p>Label: TP-OTC DRAWING NUMBER</p>
+                    <div id="info-box" class="logic-box">
+                        <div class="info-item">
+                            <strong>Tag pattern</strong>
+                            <p>Digits – Digits – Letters – Alphanum – Digits – Letters</p>
+                        </div>
+                        <div class="info-item">
+                            <strong>Title label</strong>
+                            <p>TP-OTC DRAWING NUMBER</p>
+                        </div>
                     </div>
-                </div>
-            </div>
+                </section>
 
-            <div class="search-section card">
-                <label class="section-title">Search Mode SAk3:</label>
-                <div class="radio-group">
-                    <label class="radio-label"><input type="radio" name="searchMode" value="line" checked> <span class="icon">⬇️</span> Line Tags</label>
-                    <label class="radio-label"><input type="radio" name="searchMode" value="valve"> <span class="icon">🔒</span> Valve Tags</label>
-                    <label class="radio-label"><input type="radio" name="searchMode" value="both"> <span class="icon">🌊</span> Both</label>
-                </div>
-                <div class="file-input-wrapper">
-                     <label for="fileInput" class="file-label">
-                        <span class="icon">📄</span> <span id="fileName">New Document.pdf</span>
-                     </label>
-                     <input type="file" id="fileInput" accept="application/pdf" onchange="updateFileName(this)">
-                </div>
-            </div>
+                <section class="sidebar-section">
+                    <div class="section-header">
+                        <div class="section-title">Search options</div>
+                    </div>
 
-            <div class="action-buttons">
-                <button id="export-btn" class="btn btn-primary" onclick="exportToCSV()">
-                    <span class="icon">📥</span> Export CSV
-                </button>
-                <button id="print-btn" class="btn btn-secondary" onclick="printPDF()">
-                    <span class="icon">🖨️</span> Print / Save PDF
-                </button>
-            </div>
-            
-            <div class="status-section">
-                <div id="status-bar">Audit Complete. Found 0 tags.</div>
-                <div class="spinner" id="spinner"></div>
+                    <div class="form-block">
+                        <div class="field-label">Mode</div>
+                        <div class="radio-group">
+                            <label class="radio-label"><input type="radio" name="searchMode" value="line" checked> Line tags</label>
+                            <label class="radio-label"><input type="radio" name="searchMode" value="valve"> Valve tags</label>
+                            <label class="radio-label"><input type="radio" name="searchMode" value="both"> Both</label>
+                        </div>
+                    </div>
+
+                    <div class="form-block">
+                        <div class="field-label">Duplicates</div>
+                        <div class="radio-group" style="margin-bottom: 0;">
+                            <label class="radio-label"><input type="radio" name="dupMode" value="occurrences" checked> Count all</label>
+                            <label class="radio-label"><input type="radio" name="dupMode" value="unique"> Combine</label>
+                        </div>
+                    </div>
+
+                    <div class="form-block">
+                        <div class="field-label">PDF</div>
+                        <div class="file-input-wrapper">
+                            <label for="fileInput" class="file-label">
+                                <span id="fileName">New Document.pdf</span>
+                            </label>
+                            <input type="file" id="fileInput" accept="application/pdf" onchange="updateFileName(this)">
+                        </div>
+                    </div>
+                </section>
+
+                <section class="sidebar-section">
+                    <div class="section-header">
+                        <div class="section-title">Actions</div>
+                    </div>
+                    <div class="action-buttons">
+                        <button id="export-btn" class="btn btn-primary" onclick="exportToCSV()">Export CSV</button>
+                        <button id="print-btn" class="btn btn-secondary" onclick="printPDF()">Print / Save PDF</button>
+                    </div>
+                </section>
+
+                <section class="sidebar-section sidebar-status">
+                    <div id="status-bar">Audit Complete. Found 0 tags.</div>
+                    <div class="spinner" id="spinner"></div>
+                </section>
             </div>
         </div>
         

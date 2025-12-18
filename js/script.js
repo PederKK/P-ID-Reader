@@ -10,6 +10,11 @@ let allFoundTags = [];
 let currentZoom = 1.0;
 let currentPdfBytes = null;
 
+// Duplicate handling for sidebar + CSV
+// - occurrences: show/count every match
+// - unique: combine identical tags across pages
+let duplicateMode = 'occurrences';
+
 // DOM Elements
 const fileInput = document.getElementById('fileInput');
 const pdfWrapper = document.getElementById('pdf-wrapper');
@@ -36,6 +41,16 @@ let isPanning = false;
 let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
+
+// Duplicate mode toggle (sidebar/CSV only)
+document.querySelectorAll('input[name="dupMode"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+        duplicateMode = document.querySelector('input[name="dupMode"]:checked')?.value || 'occurrences';
+        rebuildSidebar();
+        updateFooterList(currentPageNumber);
+        updateStatusBarCounts();
+    });
+});
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -221,6 +236,7 @@ async function handleFileUpload(e) {
         applyZoom();
 
         statusBar.textContent = `Audit Complete. Found ${totalMatches} tags.`;
+        updateStatusBarCounts(totalMatches);
         if (totalMatches > 0) {
             exportBtn.style.display = 'flex';
             printBtn.style.display = 'flex';
@@ -232,6 +248,172 @@ async function handleFileUpload(e) {
     } finally {
         spinner.style.display = 'none';
     }
+}
+
+function updateStatusBarCounts(totalOccurrences) {
+    const occurrences = typeof totalOccurrences === 'number' ? totalOccurrences : allFoundTags.length;
+    const unique = new Set(allFoundTags.map(t => t.tag)).size;
+
+    const current = statusBar.textContent || '';
+    if (/^Error:|^Loading|^Scanning/i.test(current)) return;
+
+    if (duplicateMode === 'unique') {
+        statusBar.textContent = `Audit Complete. Found ${unique} unique tags (${occurrences} occurrences).`;
+    } else {
+        statusBar.textContent = `Audit Complete. Found ${occurrences} tags.`;
+    }
+}
+
+function createGroupedView(tags) {
+    const map = new Map();
+    for (const t of tags) {
+        const key = t.tag;
+        if (!map.has(key)) {
+            map.set(key, {
+                tag: key,
+                occurrences: [],
+                titles: new Set(),
+                pages: new Set(),
+                status: 'Pending'
+            });
+        }
+        const g = map.get(key);
+        g.occurrences.push(t);
+        if (t.title) g.titles.add(t.title);
+        g.pages.add(t.page);
+    }
+
+    const groups = Array.from(map.values());
+    for (const g of groups) {
+        const statuses = new Set(g.occurrences.map(o => o.status));
+        if (statuses.has('Incorrect')) g.status = 'Incorrect';
+        else if (statuses.size === 1 && statuses.has('Correct')) g.status = 'Correct';
+        else g.status = 'Pending';
+    }
+
+    groups.sort((a, b) => a.tag.localeCompare(b.tag));
+    return groups;
+}
+
+function updateStatusButtonsForContainer(container, newStatus) {
+    if (!container) return;
+    const correctBtn = container.querySelector('.correct');
+    const incorrectBtn = container.querySelector('.incorrect');
+
+    if (newStatus === 'Correct') {
+        correctBtn?.classList.add('active');
+        incorrectBtn?.classList.remove('active');
+    } else if (newStatus === 'Incorrect') {
+        incorrectBtn?.classList.add('active');
+        correctBtn?.classList.remove('active');
+    } else {
+        correctBtn?.classList.remove('active');
+        incorrectBtn?.classList.remove('active');
+    }
+}
+
+function setStatusInternal(id, newStatus) {
+    const item = allFoundTags[id];
+    if (!item) return;
+    item.status = newStatus;
+    updateStatusUI(id, newStatus);
+}
+
+function rebuildSidebar() {
+    resultList.innerHTML = '';
+    if (allFoundTags.length === 0) return;
+
+    if (duplicateMode === 'unique') {
+        const groups = createGroupedView(allFoundTags);
+        groups.forEach(group => {
+            const li = document.createElement('li');
+            li.className = 'result-item';
+            if (group.status === 'Correct') li.classList.add('status-correct');
+            if (group.status === 'Incorrect') li.classList.add('status-incorrect');
+
+            const pages = Array.from(group.pages).sort((a, b) => a - b);
+            const titles = Array.from(group.titles);
+            const metaTitle = titles.length === 1 ? titles[0] : (titles.length > 1 ? `${titles[0]} (+${titles.length - 1} more)` : '');
+            const pageLabel = pages.length === 1 ? `Page ${pages[0]}` : `Pages ${pages.join(', ')}`;
+            const countLabel = `${group.occurrences.length}x`;
+
+            li.innerHTML = `
+                <div class="item-info">
+                    <span class="tag-text">${group.tag} <span class="tag-count">(${countLabel})</span></span>
+                    <span class="tag-meta">${metaTitle}</span>
+                    <span class="tag-page">${pageLabel}</span>
+                </div>
+                <div class="review-actions">
+                    <button class="btn-review correct" title="Approve all">✓</button>
+                    <button class="btn-review incorrect" title="Reject all">✕</button>
+                </div>
+            `;
+
+            li.addEventListener('click', (e) => {
+                if (e.target?.tagName === 'BUTTON') return;
+                document.querySelectorAll('.result-item').forEach(i => i.classList.remove('selected'));
+                li.classList.add('selected');
+                const occ = group.occurrences[0];
+                if (!occ?.element) return;
+                document.querySelectorAll('.highlight-box').forEach(h => h.classList.remove('focused'));
+                occ.element.classList.add('focused');
+                occ.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            });
+
+            li.querySelector('.btn-review.correct')?.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                group.occurrences.forEach(o => setStatusInternal(o.id, 'Correct'));
+                rebuildSidebar();
+                updateFooterList(currentPageNumber);
+            });
+            li.querySelector('.btn-review.incorrect')?.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                group.occurrences.forEach(o => setStatusInternal(o.id, 'Incorrect'));
+                rebuildSidebar();
+                updateFooterList(currentPageNumber);
+            });
+
+            resultList.appendChild(li);
+        });
+        return;
+    }
+
+    // occurrences mode
+    allFoundTags.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'result-item';
+        li.innerHTML = `
+            <div class="item-info">
+                <span class="tag-text">${item.tag}</span>
+                <span class="tag-meta">${item.title}</span>
+                <span class="tag-page">Page ${item.page}</span>
+            </div>
+            <div class="review-actions">
+                <button class="btn-review correct" title="Approve">✓</button>
+                <button class="btn-review incorrect" title="Reject">✕</button>
+            </div>
+        `;
+
+        li.addEventListener('click', () => {
+            document.querySelectorAll('.result-item').forEach(i => i.classList.remove('selected'));
+            li.classList.add('selected');
+            document.querySelectorAll('.highlight-box').forEach(h => h.classList.remove('focused'));
+            item.element.classList.add('focused');
+            item.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        });
+
+        li.querySelector('.btn-review.correct')?.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            setStatusInternal(item.id, 'Correct');
+        });
+        li.querySelector('.btn-review.incorrect')?.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            setStatusInternal(item.id, 'Incorrect');
+        });
+
+        updateStatusButtonsForContainer(li, item.status);
+        resultList.appendChild(li);
+    });
 }
 
 async function processPage(pdf, pageNumber) {
@@ -446,67 +628,28 @@ function addSidebarItem(text, pageNum, title, highlightElement, pdfRect) {
         pdfRect: pdfRect
     });
 
-    const li = document.createElement('li');
-    li.className = 'result-item';
-
-    li.innerHTML = `
-        <div class="item-info">
-            <span class="tag-text">${text}</span>
-            <span class="tag-meta">${title}</span>
-            <span class="tag-page">Page ${pageNum}</span>
-        </div>
-        <div class="review-actions">
-            <button class="btn-review correct" title="Approve" onclick="setStatus(event, ${id}, 'Correct', this)">✓</button>
-            <button class="btn-review incorrect" title="Reject" onclick="setStatus(event, ${id}, 'Incorrect', this)">✕</button>
-        </div>
-    `;
-
-    li.addEventListener('click', () => {
-        document.querySelectorAll('.result-item').forEach(i => i.classList.remove('selected'));
-        li.classList.add('selected');
-
-        document.querySelectorAll('.highlight-box').forEach(h => h.classList.remove('focused'));
-        highlightElement.classList.add('focused');
-
-        highlightElement.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-    });
-
-    resultList.appendChild(li);
+    // Sidebar rendering is centralized to support duplicate grouping.
+    rebuildSidebar();
 }
 
 function setStatus(e, id, newStatus, btn) {
     e.stopPropagation(); 
 
-    const item = allFoundTags[id];
-    item.status = newStatus;
+    setStatusInternal(id, newStatus);
 
-    // Update buttons in BOTH sidebar and footer
-    updateStatusUI(id, newStatus);
+    if (duplicateMode === 'unique') {
+        rebuildSidebar();
+    }
 }
 
 function updateStatusUI(id, newStatus) {
     const item = allFoundTags[id];
-    
-    // Helper to update a specific button group
-    const updateButtons = (container) => {
-        if (!container) return;
-        const correctBtn = container.querySelector('.correct');
-        const incorrectBtn = container.querySelector('.incorrect');
-        
-        if (newStatus === 'Correct') {
-            correctBtn?.classList.add('active');
-            incorrectBtn?.classList.remove('active');
-        } else {
-            incorrectBtn?.classList.add('active');
-            correctBtn?.classList.remove('active');
-        }
-    };
 
     // 1. Update Sidebar Item
     // We need to find the specific LI in the sidebar. 
     // Since we push items in order, index matches ID.
     const sidebarLi = resultList.children[id];
-    if (sidebarLi) updateButtons(sidebarLi);
+    if (sidebarLi) updateStatusButtonsForContainer(sidebarLi, newStatus);
 
     // 2. Update Footer Item (if present)
     // Footer is rebuilt dynamically, so we search by text or just rebuild it?
@@ -525,6 +668,8 @@ function updateStatusUI(id, newStatus) {
         item.element.classList.add('status-incorrect');
         item.element.classList.remove('status-correct');
     }
+
+    updateStatusBarCounts();
 }
 
 function printPDF() {
@@ -541,12 +686,22 @@ function exportToCSV() {
         return;
     }
     let csvContent = "data:text/csv;charset=utf-8,";
-    csvContent += "Tag Number,Sheet Title,Page Number,Review Status\n";
-
-    allFoundTags.forEach(row => {
-        const safeTitle = `"${row.title.replace(/"/g, '""')}"`; 
-        csvContent += `${row.tag},${safeTitle},${row.page},${row.status}\n`;
-    });
+    if (duplicateMode === 'unique') {
+        csvContent += "Tag Number,Sheet Title(s),Page Number(s),Occurrences,Review Status\n";
+        const groups = createGroupedView(allFoundTags);
+        groups.forEach(g => {
+            const titles = Array.from(g.titles).join(" | ");
+            const pages = Array.from(g.pages).sort((a, b) => a - b).join(";");
+            const safeTitles = `"${titles.replace(/"/g, '""')}"`;
+            csvContent += `${g.tag},${safeTitles},"${pages}",${g.occurrences.length},${g.status}\n`;
+        });
+    } else {
+        csvContent += "Tag Number,Sheet Title,Page Number,Review Status\n";
+        allFoundTags.forEach(row => {
+            const safeTitle = `"${row.title.replace(/"/g, '""')}"`;
+            csvContent += `${row.tag},${safeTitle},${row.page},${row.status}\n`;
+        });
+    }
 
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
