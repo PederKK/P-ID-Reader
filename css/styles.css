@@ -711,8 +711,16 @@ body.sidebar-collapsed #sticky-footer {
 }
 
 .btn-mini:hover { opacity: 1; transform: scale(1.2); }
+.btn-mini.active { opacity: 1; transform: scale(1.15); }
 .footer-tag-item.status-correct .correct { opacity: 1; }
 .footer-tag-item.status-incorrect .incorrect { opacity: 1; }
+
+/* Improve click-to-locate feedback for highlights */
+.highlight-box.active {
+    outline: 2px solid rgba(255, 255, 255, 0.95);
+    box-shadow: 0 0 0 4px rgba(0, 86, 179, 0.35);
+    opacity: 0.95;
+}
 
 /* --- PRINT STYLES --- */
 @media print {

@@ -45,6 +45,8 @@ const footerList = document.getElementById('footerList');
 const stickyFooter = document.getElementById('sticky-footer');
 const viewerContainer = document.getElementById('viewer-container');
 const zoomContainer = document.getElementById('zoom-container'); // New container
+// Optional: some UI variants include a dedicated Search button.
+// This project currently auto-runs on file selection, so the button may not exist.
 const searchBtn = document.getElementById('search-btn');
 
 // Track current page for footer updates
@@ -58,6 +60,14 @@ let isPanning = false;
 let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
+
+// Duplicate mode UI binding (Count all vs Combine)
+document.querySelectorAll('input[name="dupMode"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+        duplicateMode = document.querySelector('input[name="dupMode"]:checked')?.value || 'occurrences';
+        rebuildSidebar();
+    });
+});
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -503,6 +513,218 @@ function addSidebarItem(text, pageNum, title, highlightElement, pdfRect) {
 
     // Sidebar rendering is centralized to support duplicate grouping.
     rebuildSidebar();
+}
+
+// --- SIDEBAR (RE)RENDERING + DUPLICATE GROUPING ---
+// NOTE: These functions are required by addSidebarItem(), setStatus(), and exportToCSV().
+
+function rebuildSidebar() {
+    // Keep duplicateMode in sync with the UI on each rebuild.
+    const selected = document.querySelector('input[name="dupMode"]:checked')?.value;
+    if (selected) duplicateMode = selected;
+
+    resultList.innerHTML = '';
+
+    if (allFoundTags.length === 0) {
+        return;
+    }
+
+    if (duplicateMode === 'unique') {
+        const groups = createGroupedView(allFoundTags);
+        groups.forEach(g => renderSidebarGroupedItem(g));
+    } else {
+        allFoundTags.forEach(item => renderSidebarOccurrenceItem(item));
+    }
+}
+
+function createGroupedView(tags) {
+    // Group by the literal tag string.
+    const map = new Map();
+    for (const t of tags) {
+        const key = t.tag;
+        let g = map.get(key);
+        if (!g) {
+            g = {
+                tag: key,
+                occurrences: [],
+                pages: new Set(),
+                titles: new Set()
+            };
+            map.set(key, g);
+        }
+        g.occurrences.push(t);
+        g.pages.add(t.page);
+        if (t.title) g.titles.add(t.title);
+    }
+
+    const groups = Array.from(map.values());
+
+    // Determine group status:
+    // - Incorrect if any occurrence incorrect
+    // - Correct if all occurrences correct
+    // - Pending otherwise
+    for (const g of groups) {
+        const statuses = g.occurrences.map(o => o.status);
+        if (statuses.includes('Incorrect')) g.status = 'Incorrect';
+        else if (statuses.length > 0 && statuses.every(s => s === 'Correct')) g.status = 'Correct';
+        else g.status = 'Pending';
+    }
+
+    // Stable sort for nicer UX: by tag, then by first page.
+    groups.sort((a, b) => {
+        const tagCmp = a.tag.localeCompare(b.tag);
+        if (tagCmp !== 0) return tagCmp;
+        const aMin = Math.min(...Array.from(a.pages));
+        const bMin = Math.min(...Array.from(b.pages));
+        return aMin - bMin;
+    });
+
+    return groups;
+}
+
+function renderSidebarOccurrenceItem(item) {
+    const li = document.createElement('li');
+    li.className = 'result-item';
+
+    const safeTitle = item.title || 'Unknown Title';
+    li.innerHTML = `
+        <div class="result-main">
+            <div class="tag">${item.tag}</div>
+            <div class="meta">Sheet: ${escapeHtml(safeTitle)} · Page: ${item.page}</div>
+        </div>
+        <div class="result-actions">
+            <button class="btn-mini correct" title="Approve" onclick="setStatus(event, ${item.id}, 'Correct', this)">✓</button>
+            <button class="btn-mini incorrect" title="Reject" onclick="setStatus(event, ${item.id}, 'Incorrect', this)">✗</button>
+        </div>
+    `;
+
+    // Apply current status styling
+    applyStatusClasses(li, item.status);
+    updateStatusButtonsForContainer(li, item.status);
+
+    li.addEventListener('click', () => {
+        // Prefer scrolling to the actual hit, not only the page.
+        if (item.element) {
+            item.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            item.element.classList.add('active');
+            setTimeout(() => item.element?.classList.remove('active'), 700);
+            return;
+        }
+
+        // Fallback: scroll to page container
+        const pageDiv = document.getElementById(`page-${item.page}`);
+        pageDiv?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    resultList.appendChild(li);
+}
+
+function renderSidebarGroupedItem(group) {
+    const li = document.createElement('li');
+    li.className = 'result-item';
+
+    const titles = Array.from(group.titles);
+    const titleLabel = titles.length ? titles.join(' | ') : 'Unknown Title';
+    const pages = Array.from(group.pages).sort((a, b) => a - b);
+
+    li.innerHTML = `
+        <div class="result-main">
+            <div class="tag">${group.tag}</div>
+            <div class="meta">Sheets: ${escapeHtml(titleLabel)} · Pages: ${pages.join(', ')} · Count: ${group.occurrences.length}</div>
+        </div>
+        <div class="result-actions">
+            <button class="btn-mini correct" title="Approve all" data-tag="${escapeHtml(group.tag)}">✓</button>
+            <button class="btn-mini incorrect" title="Reject all" data-tag="${escapeHtml(group.tag)}">✗</button>
+        </div>
+    `;
+
+    // Wire group buttons without fragile inline JS (handles quotes safely)
+    li.querySelector('button.correct')?.addEventListener('click', (e) => {
+        const tag = e.currentTarget?.getAttribute('data-tag');
+        if (!tag) return;
+        setGroupStatus(e, tag, 'Correct');
+    });
+    li.querySelector('button.incorrect')?.addEventListener('click', (e) => {
+        const tag = e.currentTarget?.getAttribute('data-tag');
+        if (!tag) return;
+        setGroupStatus(e, tag, 'Incorrect');
+    });
+
+    applyStatusClasses(li, group.status);
+    updateStatusButtonsForContainer(li, group.status);
+
+    li.addEventListener('click', () => {
+        // Jump to first occurrence (best effort: actual highlight if present)
+        const first = group.occurrences[0];
+        if (!first) return;
+        if (first.element) {
+            first.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            first.element.classList.add('active');
+            setTimeout(() => first.element?.classList.remove('active'), 700);
+            return;
+        }
+        document.getElementById(`page-${first.page}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    resultList.appendChild(li);
+}
+
+function setGroupStatus(e, tagText, newStatus) {
+    e.stopPropagation();
+    for (const item of allFoundTags) {
+        if (item.tag === tagText) {
+            setStatusInternal(item.id, newStatus);
+        }
+    }
+    rebuildSidebar();
+}
+
+function setStatusInternal(id, newStatus) {
+    const item = allFoundTags[id];
+    if (!item) return;
+
+    item.status = newStatus;
+    updateStatusUI(id, newStatus);
+}
+
+function updateStatusButtonsForContainer(containerEl, newStatus) {
+    if (!containerEl) return;
+    const correctBtn = containerEl.querySelector('button.correct');
+    const incorrectBtn = containerEl.querySelector('button.incorrect');
+
+    if (correctBtn) correctBtn.classList.toggle('active', newStatus === 'Correct');
+    if (incorrectBtn) incorrectBtn.classList.toggle('active', newStatus === 'Incorrect');
+}
+
+function applyStatusClasses(containerEl, newStatus) {
+    if (!containerEl) return;
+    containerEl.classList.toggle('status-correct', newStatus === 'Correct');
+    containerEl.classList.toggle('status-incorrect', newStatus === 'Incorrect');
+}
+
+function updateStatusBarCounts(totalTagsOverride) {
+    // If totalTagsOverride supplied, it represents total matches found during scan
+    const total = typeof totalTagsOverride === 'number' ? totalTagsOverride : allFoundTags.length;
+
+    const correct = allFoundTags.filter(t => t.status === 'Correct').length;
+    const incorrect = allFoundTags.filter(t => t.status === 'Incorrect').length;
+    const pending = total - correct - incorrect;
+
+    statusBar.textContent = `Audit Complete. Found ${total} tags. Pending ${pending} · Correct ${correct} · Incorrect ${incorrect}`;
+}
+
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function escapeJs(s) {
+    // Safe for wrapping in single quotes inside HTML onclick.
+    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
 function setStatus(e, id, newStatus, btn) {
