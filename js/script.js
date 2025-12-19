@@ -37,6 +37,7 @@ const pdfWrapper = document.getElementById('pdf-wrapper');
 const resultList = document.getElementById('resultList');
 const statusBar = document.getElementById('status-bar');
 const spinner = document.getElementById('spinner');
+const completionIcon = document.getElementById('completion-icon');
 const exportBtn = document.getElementById('export-btn');
 const printBtn = document.getElementById('print-btn');
 const zoomSlider = document.getElementById('zoom-slider');
@@ -252,6 +253,7 @@ async function runAudit(file) {
     fileInput.disabled = true;
     statusBar.textContent = 'Loading P&ID...';
     spinner.style.display = 'block';
+    if (completionIcon) completionIcon.style.display = 'none';
 
     // Set initial zoom to 0.8 (80%) which is usually a good fit for 2.0 render scale
     currentZoom = 0.8;
@@ -288,6 +290,7 @@ async function runAudit(file) {
             exportBtn.style.display = 'flex';
             printBtn.style.display = 'flex';
         }
+        if (completionIcon) completionIcon.style.display = 'block';
 
     } catch (err) {
         console.error(err);
