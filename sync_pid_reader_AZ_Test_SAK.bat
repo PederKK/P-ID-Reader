@@ -1,6 +1,14 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
+REM Always run relative to this script's folder (fixes running from shortcuts/other CWD)
+cd /d "%~dp0"
+
+REM Default behavior: pause so the window doesn't instantly close when double-clicked.
+REM Pass --nopause to disable (useful when calling from another script).
+set "PAUSE_ON_EXIT=1"
+if /I "%~1"=="--nopause" set "PAUSE_ON_EXIT=0"
+
 REM --- Config ---
 set "REPO_URL=https://github.com/PederKK/P-ID-Reader.git"
 set "BRANCH=AZ_Test_SAK"
@@ -16,14 +24,14 @@ where git >nul 2>nul
 if errorlevel 1 (
   echo ERROR: Git is not installed or not on PATH.
   echo Install Git for Windows: https://git-scm.com/download/win
-  exit /b 1
+  goto :error
 )
 
 if exist "%TARGET_DIR%\" (
   if not exist "%TARGET_DIR%\.git\" (
     echo ERROR: "%TARGET_DIR%" exists but is not a git repository.
     echo Rename/delete that folder or set TARGET_DIR in this script.
-    exit /b 1
+    goto :error
   )
 
   echo Updating existing repo...
@@ -33,7 +41,7 @@ if exist "%TARGET_DIR%\" (
   if not defined ORIGIN_URL (
     echo ERROR: Could not read origin remote URL.
     popd >nul
-    exit /b 1
+    goto :error
   )
 
   echo Origin: !ORIGIN_URL!
@@ -68,7 +76,7 @@ if exist "%TARGET_DIR%\" (
   popd >nul
   echo.
   echo Update complete.
-  exit /b 0
+  goto :success
 ) else (
   echo Cloning repo...
   git clone -b "%BRANCH%" "%REPO_URL%" "%TARGET_DIR%"
@@ -76,8 +84,13 @@ if exist "%TARGET_DIR%\" (
 
   echo.
   echo Clone complete.
-  exit /b 0
+  goto :success
 )
+
+:success
+echo.
+if "%PAUSE_ON_EXIT%"=="1" pause
+exit /b 0
 
 :error
 echo.
@@ -87,4 +100,5 @@ if defined TARGET_DIR (
     echo Folder: %CD%\%TARGET_DIR%
   )
 )
+if "%PAUSE_ON_EXIT%"=="1" pause
 exit /b 1
