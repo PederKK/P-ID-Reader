@@ -204,6 +204,10 @@ zoomSlider.addEventListener('input', (e) => {
 async function handleFileUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
+    
+    // Store PDF name for export feature
+    window.currentPDFName = file.name.replace(/\.pdf$/i, '');
+    
     // Keep current behavior: auto-run when a file is selected
     await runAudit(file);
 }
@@ -973,8 +977,13 @@ async function runSymbolDetection() {
     detectBtn.innerHTML = '⏳ Detecting...';
     detectBtn.disabled = true;
     
+    // Create and show progress bar
+    const progressBar = createProgressBar();
+    
     try {
-        const results = await window.SymbolDetector.detectSymbolsInAllPages(pdfWrapper);
+        const results = await window.SymbolDetector.detectSymbolsInAllPages(pdfWrapper, (progress) => {
+            updateProgressBar(progressBar, progress);
+        });
         
         // Update results display
         updateDetectionResults(results);
@@ -990,7 +999,68 @@ async function runSymbolDetection() {
     } finally {
         detectBtn.innerHTML = originalText;
         detectBtn.disabled = false;
+        removeProgressBar(progressBar);
     }
+}
+
+/**
+ * Create a progress bar for symbol detection
+ */
+function createProgressBar() {
+    const progressContainer = document.createElement('div');
+    progressContainer.id = 'detection-progress';
+    progressContainer.className = 'detection-progress-container';
+    progressContainer.innerHTML = `
+        <div class="progress-header">
+            <span class="progress-title">🔍 Detecting Symbols</span>
+            <span class="progress-text">Starting...</span>
+        </div>
+        <div class="progress-bar-track">
+            <div class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+        <div class="progress-details">
+            <span class="progress-page">Page 0 of 0</span>
+            <span class="progress-percentage">0%</span>
+        </div>
+    `;
+    
+    // Insert progress bar into detection results area
+    const resultsContainer = document.getElementById('detection-results');
+    if (resultsContainer) {
+        resultsContainer.insertBefore(progressContainer, resultsContainer.firstChild);
+    }
+    
+    return progressContainer;
+}
+
+/**
+ * Update progress bar
+ */
+function updateProgressBar(progressBar, progress) {
+    if (!progressBar) return;
+    
+    const fillBar = progressBar.querySelector('.progress-bar-fill');
+    const progressText = progressBar.querySelector('.progress-text');
+    const progressPage = progressBar.querySelector('.progress-page');
+    const progressPercentage = progressBar.querySelector('.progress-percentage');
+    
+    if (fillBar) fillBar.style.width = progress.percentage + '%';
+    if (progressText) progressText.textContent = progress.message;
+    if (progressPage) progressPage.textContent = `Page ${progress.current} of ${progress.total}`;
+    if (progressPercentage) progressPercentage.textContent = progress.percentage + '%';
+}
+
+/**
+ * Remove progress bar with fade out animation
+ */
+function removeProgressBar(progressBar) {
+    if (!progressBar) return;
+    
+    progressBar.style.opacity = '0';
+    progressBar.style.transition = 'opacity 0.3s ease';
+    setTimeout(() => {
+        progressBar.remove();
+    }, 300);
 }
 
 /**
@@ -1030,7 +1100,7 @@ function removeTemplate(symbolKey) {
 }
 
 /**
- * Update detection results display
+ * Update detection results display with detailed statistics
  */
 function updateDetectionResults(results) {
     const container = document.getElementById('detection-results');
@@ -1043,24 +1113,294 @@ function updateDetectionResults(results) {
     
     // Group by symbol type
     const grouped = {};
+    const pageData = {};
+    
     for (const r of results) {
+        // Group by symbol type
         if (!grouped[r.symbolName]) {
-            grouped[r.symbolName] = { count: 0, color: r.color };
+            grouped[r.symbolName] = { 
+                count: 0, 
+                color: r.color,
+                key: r.symbolKey,
+                detections: []
+            };
         }
         grouped[r.symbolName].count++;
+        grouped[r.symbolName].detections.push(r);
+        
+        // Group by page
+        if (!pageData[r.page]) {
+            pageData[r.page] = [];
+        }
+        pageData[r.page].push(r);
     }
     
-    let html = `<div class="result-summary">✓ Found ${results.length} symbol(s)</div>`;
-    html += '<div style="margin-top: 8px;">';
+    // Summary header
+    let html = `
+        <div class="result-summary-header">
+            <div class="result-total">✓ Found ${results.length} symbol(s)</div>
+            <button class="btn-view-details" onclick="toggleDetailedReport()">📊 View Details</button>
+            <button class="btn-export-report" onclick="exportDetectionReport()" title="Export Report">📄</button>
+        </div>
+    `;
+    
+    // Quick summary by type
+    html += '<div class="result-quick-summary">';
     for (const name in grouped) {
-        html += `<div class="result-item">
-            <span><span class="symbol-dot" style="display:inline-block;background:${grouped[name].color}"></span>${name}</span>
-            <strong>${grouped[name].count}</strong>
-        </div>`;
+        html += `
+            <div class="result-item" onclick="filterBySymbol('${grouped[name].key}')">
+                <span class="symbol-dot" style="background:${grouped[name].color}"></span>
+                <span class="symbol-name">${name}</span>
+                <strong class="symbol-count">${grouped[name].count}</strong>
+            </div>`;
     }
     html += '</div>';
     
+    // Detailed report (hidden by default)
+    html += '<div id="detailed-report" class="detailed-report" style="display:none;">';
+    html += buildDetailedReport(grouped, pageData, results);
+    html += '</div>';
+    
     container.innerHTML = html;
+    
+    // Store results globally for export
+    window.lastDetectionResults = results;
+}
+
+/**
+ * Build detailed detection report
+ */
+function buildDetailedReport(grouped, pageData, allResults) {
+    let html = '<div class="report-sections">';
+    
+    // Section 1: By Symbol Type
+    html += '<div class="report-section">';
+    html += '<h4>📦 By Symbol Type</h4>';
+    for (const name in grouped) {
+        const data = grouped[name];
+        html += `
+            <div class="symbol-detail-block">
+                <div class="symbol-detail-header">
+                    <span class="symbol-dot" style="background:${data.color}"></span>
+                    <strong>${name}</strong> (${data.count} found)
+                </div>
+                <div class="symbol-locations">
+                    ${buildSymbolLocations(data.detections)}
+                </div>
+            </div>`;
+    }
+    html += '</div>';
+    
+    // Section 2: By Page
+    html += '<div class="report-section">';
+    html += '<h4>📄 By Page</h4>';
+    const pages = Object.keys(pageData).sort((a, b) => parseInt(a) - parseInt(b));
+    for (const page of pages) {
+        const symbols = pageData[page];
+        const symbolCounts = {};
+        for (const s of symbols) {
+            symbolCounts[s.symbolName] = (symbolCounts[s.symbolName] || 0) + 1;
+        }
+        
+        html += `
+            <div class="page-detail-block">
+                <div class="page-header">
+                    <strong>Page ${page}</strong> 
+                    <span class="page-count">${symbols.length} symbol(s)</span>
+                    <button class="btn-jump-page" onclick="jumpToPage(${page})">Go →</button>
+                </div>
+                <div class="page-symbols">
+                    ${Object.entries(symbolCounts).map(([name, count]) => 
+                        `<span class="page-symbol-chip">${name} (${count})</span>`
+                    ).join('')}
+                </div>
+            </div>`;
+    }
+    html += '</div>';
+    
+    // Section 3: Confidence Analysis
+    html += '<div class="report-section">';
+    html += '<h4>🎯 Confidence Analysis</h4>';
+    html += buildConfidenceAnalysis(allResults);
+    html += '</div>';
+    
+    html += '</div>'; // close report-sections
+    return html;
+}
+
+/**
+ * Build symbol locations list
+ */
+function buildSymbolLocations(detections) {
+    if (detections.length === 0) return '';
+    
+    // Group by page
+    const byPage = {};
+    for (const d of detections) {
+        if (!byPage[d.page]) byPage[d.page] = [];
+        byPage[d.page].push(d);
+    }
+    
+    let html = '<div class="location-list">';
+    for (const page in byPage) {
+        const items = byPage[page];
+        html += `
+            <div class="location-item">
+                <span class="location-page" onclick="jumpToPage(${page})">Page ${page}</span>
+                <span class="location-count">${items.length}×</span>
+                <span class="location-confidence">${getAverageConfidence(items)}% avg</span>
+            </div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+/**
+ * Build confidence analysis
+ */
+function buildConfidenceAnalysis(results) {
+    if (results.length === 0) return '<p>No data</p>';
+    
+    // Calculate confidence stats
+    const confidences = results.map(r => r.confidence * 100);
+    const avg = confidences.reduce((a, b) => a + b, 0) / confidences.length;
+    const min = Math.min(...confidences);
+    const max = Math.max(...confidences);
+    
+    // Categorize by confidence level
+    const high = results.filter(r => r.confidence >= 0.85).length;
+    const medium = results.filter(r => r.confidence >= 0.70 && r.confidence < 0.85).length;
+    const low = results.filter(r => r.confidence < 0.70).length;
+    
+    let html = `
+        <div class="confidence-stats">
+            <div class="stat-row">
+                <span>Average Confidence:</span>
+                <strong>${avg.toFixed(1)}%</strong>
+            </div>
+            <div class="stat-row">
+                <span>Range:</span>
+                <strong>${min.toFixed(1)}% - ${max.toFixed(1)}%</strong>
+            </div>
+        </div>
+        <div class="confidence-breakdown">
+            <div class="confidence-bar">
+                <div class="conf-segment conf-high" style="width: ${(high/results.length)*100}%">
+                    <span class="conf-label">${high} High (≥85%)</span>
+                </div>
+                <div class="conf-segment conf-medium" style="width: ${(medium/results.length)*100}%">
+                    <span class="conf-label">${medium} Med (70-85%)</span>
+                </div>
+                <div class="conf-segment conf-low" style="width: ${(low/results.length)*100}%">
+                    <span class="conf-label">${low} Low (<70%)</span>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    return html;
+}
+
+/**
+ * Get average confidence for a list of detections
+ */
+function getAverageConfidence(detections) {
+    if (detections.length === 0) return 0;
+    const sum = detections.reduce((acc, d) => acc + (d.confidence * 100), 0);
+    return (sum / detections.length).toFixed(0);
+}
+
+/**
+ * Toggle detailed report visibility
+ */
+function toggleDetailedReport() {
+    const report = document.getElementById('detailed-report');
+    if (!report) return;
+    
+    const isVisible = report.style.display !== 'none';
+    report.style.display = isVisible ? 'none' : 'block';
+    
+    const btn = document.querySelector('.btn-view-details');
+    if (btn) {
+        btn.textContent = isVisible ? '📊 View Details' : '📊 Hide Details';
+    }
+}
+
+/**
+ * Jump to a specific page
+ */
+function jumpToPage(pageNumber) {
+    const pageContainer = document.querySelector(`.pdf-page[data-page-number="${pageNumber}"]`);
+    if (pageContainer) {
+        pageContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        
+        // Flash effect
+        pageContainer.style.transition = 'background 0.3s';
+        pageContainer.style.background = 'rgba(102, 126, 234, 0.1)';
+        setTimeout(() => {
+            pageContainer.style.background = '';
+        }, 1000);
+        
+        showToast(`Jumped to page ${pageNumber}`, 'info');
+    }
+}
+
+/**
+ * Filter symbols by type
+ */
+function filterBySymbol(symbolKey) {
+    if (!window.SymbolDetector) return;
+    
+    // Toggle filter - if clicking the same symbol, clear filter
+    if (window.currentSymbolFilter === symbolKey) {
+        window.currentSymbolFilter = null;
+        window.SymbolDetector.clearSymbolHighlights();
+        showToast('Filter cleared', 'info');
+    } else {
+        window.currentSymbolFilter = symbolKey;
+        // Hide other symbols, show only this one
+        const overlays = document.querySelectorAll('.symbol-overlay');
+        overlays.forEach(overlay => {
+            const key = overlay.dataset.symbolKey;
+            if (key === symbolKey) {
+                overlay.style.display = 'block';
+            } else {
+                overlay.style.display = 'none';
+            }
+        });
+        showToast(`Showing only ${symbolKey}`, 'info');
+    }
+}
+
+/**
+ * Export detection report
+ */
+function exportDetectionReport() {
+    if (!window.lastDetectionResults || window.lastDetectionResults.length === 0) {
+        showToast('No detection results to export', 'warning');
+        return;
+    }
+    
+    const results = window.lastDetectionResults;
+    const timestamp = new Date().toISOString().split('T')[0];
+    const pdfName = window.currentPDFName || 'document';
+    
+    // Generate CSV content
+    let csv = 'Symbol Type,Page,X,Y,Width,Height,Confidence\n';
+    for (const r of results) {
+        csv += `"${r.symbolName}",${r.page},${r.x},${r.y},${r.width},${r.height},${(r.confidence * 100).toFixed(1)}%\n`;
+    }
+    
+    // Create download
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${pdfName}_symbol_report_${timestamp}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    showToast('✓ Report exported', 'success');
 }
 
 /**
@@ -1072,6 +1412,8 @@ function clearSymbolData() {
         updateTemplateStatus();
         const resultsContainer = document.getElementById('detection-results');
         if (resultsContainer) resultsContainer.innerHTML = '';
+        window.lastDetectionResults = null;
+        window.currentSymbolFilter = null;
         showToast('Cleared all templates and results', 'info');
     }
 }

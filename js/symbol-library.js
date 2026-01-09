@@ -72,6 +72,24 @@ function populateSymbolDropdown() {
     // Clear existing options
     select.innerHTML = '<option value="">Choose a symbol...</option>';
     
+    // Add "All Valves" option at the top
+    const allValvesOption = document.createElement('option');
+    allValvesOption.value = 'all-valves';
+    allValvesOption.textContent = '🔧 All Valves (Load Everything)';
+    select.appendChild(allValvesOption);
+    
+    // Add custom option next
+    const customOption = document.createElement('option');
+    customOption.value = 'custom';
+    customOption.textContent = '✂️ Custom (capture from PDF)';
+    select.appendChild(customOption);
+    
+    // Add divider
+    const divider = document.createElement('option');
+    divider.disabled = true;
+    divider.textContent = '─────────────────────';
+    select.appendChild(divider);
+    
     // Add symbols from library
     SYMBOL_LIBRARY.forEach((symbol, index) => {
         const option = document.createElement('option');
@@ -79,12 +97,6 @@ function populateSymbolDropdown() {
         option.textContent = symbol.name;
         select.appendChild(option);
     });
-    
-    // Add custom option
-    const customOption = document.createElement('option');
-    customOption.value = 'custom';
-    customOption.textContent = '➕ Custom (capture from PDF)';
-    select.appendChild(customOption);
     
     console.log(`✓ Symbol dropdown populated with ${SYMBOL_LIBRARY.length} symbols`);
 }
@@ -115,6 +127,10 @@ function onSymbolSelectChange() {
         // No selection
         if (hint) hint.textContent = '';
         if (captureBtn) captureBtn.disabled = true;
+    } else if (value === 'all-valves') {
+        // All valves - will load all symbols at once
+        if (hint) hint.textContent = `Click "Load" to load all ${SYMBOL_LIBRARY.length} valve symbols at once`;
+        if (captureBtn) captureBtn.disabled = false;
     } else if (value === 'custom') {
         // Custom selection - requires manual capture
         if (hint) hint.textContent = 'Draw a box around any symbol in the PDF to capture it';
@@ -136,6 +152,35 @@ async function captureSelectedSymbol() {
     const select = document.getElementById('symbolSelect');
     if (!select || !select.value) {
         window.showToast('Please select a symbol first', 'error');
+        return;
+    }
+    
+    // All valves - load all symbols
+    if (select.value === 'all-valves') {
+        try {
+            window.showToast(`Loading all ${SYMBOL_LIBRARY.length} valve symbols...`, 'info');
+            let successCount = 0;
+            let failCount = 0;
+            
+            for (const symbol of SYMBOL_LIBRARY) {
+                try {
+                    await loadSymbolFromFile(symbol.file, symbol.name);
+                    successCount++;
+                } catch (err) {
+                    console.error(`Failed to load ${symbol.name}:`, err);
+                    failCount++;
+                }
+            }
+            
+            if (failCount > 0) {
+                window.showToast(`✓ Loaded ${successCount} symbols (${failCount} failed)`, 'warning');
+            } else {
+                window.showToast(`✓ All ${successCount} valve symbols loaded!`, 'success');
+            }
+        } catch (err) {
+            console.error('Failed to load symbols:', err);
+            window.showToast('Failed to load valve symbols', 'error');
+        }
         return;
     }
     

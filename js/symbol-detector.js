@@ -454,13 +454,14 @@ function drawDetectionBoxes(overlayCanvas, detections) {
  * Create detection overlays for all PDF pages
  * @param {HTMLElement} pdfWrapper - Container with page canvases
  */
-async function detectSymbolsInAllPages(pdfWrapper) {
+async function detectSymbolsInAllPages(pdfWrapper, progressCallback = null) {
     if (!opencvReady) {
         await loadOpenCV();
     }
     
     detectedSymbols = [];
     const pdfPages = pdfWrapper.querySelectorAll('.pdf-page');
+    const totalPages = pdfPages.length;
     
     for (let i = 0; i < pdfPages.length; i++) {
         const pageDiv = pdfPages[i];
@@ -472,6 +473,16 @@ async function detectSymbolsInAllPages(pdfWrapper) {
         
         const pageNumber = i + 1;
         console.log(`Detecting symbols on page ${pageNumber}...`);
+        
+        // Call progress callback
+        if (progressCallback) {
+            progressCallback({
+                current: pageNumber,
+                total: totalPages,
+                percentage: Math.round((pageNumber / totalPages) * 100),
+                message: `Processing page ${pageNumber} of ${totalPages}...`
+            });
+        }
         
         // Detect symbols
         const pageDetections = await detectSymbolsInPage(pageCanvas, pageNumber);
