@@ -1350,6 +1350,25 @@ body.sidebar-collapsed #sticky-footer {
     box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
 }
 
+.btn-capture-full {
+    width: 100%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 12px 16px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 600;
+    transition: transform 0.15s, box-shadow 0.15s;
+    margin-bottom: 8px;
+}
+
+.btn-capture-full:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(102, 126, 234, 0.5);
+}
+
 .symbol-hint {
     font-size: 12px;
     color: var(--sidebar-muted);

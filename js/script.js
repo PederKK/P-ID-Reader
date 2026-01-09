@@ -295,6 +295,12 @@ async function runAudit(file) {
             printBtn.style.display = 'flex';
         }
         if (completionIcon) completionIcon.style.display = 'block';
+        
+        // Collapse the footer by default after PDF loads
+        const footer = document.getElementById('sticky-footer');
+        if (footer) {
+            footer.classList.add('collapsed');
+        }
 
     } catch (err) {
         console.error(err);
@@ -1401,6 +1407,28 @@ function exportDetectionReport() {
     URL.revokeObjectURL(url);
     
     showToast('✓ Report exported', 'success');
+}
+
+/**
+ * Start custom symbol capture
+ */
+function startCustomCapture() {
+    if (!window.SymbolDetector) {
+        showToast('Symbol detector not loaded', 'error');
+        return;
+    }
+    
+    if (!pdfDoc) {
+        showToast('Please load a PDF first', 'warning');
+        return;
+    }
+    
+    // Generate a unique key based on timestamp
+    const timestamp = Date.now();
+    const symbolKey = `symbol_${timestamp}`;
+    const symbolName = `Symbol ${new Date().toLocaleTimeString()}`;
+    
+    window.SymbolDetector.enableTemplateCaptureMode(symbolKey, symbolName);
 }
 
 /**
