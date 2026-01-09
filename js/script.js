@@ -395,6 +395,12 @@ async function processPage(pdf, pageNumber) {
             highlight.style.height = `${fontHeight}px`;
             highlight.style.transform = `rotate(${angleDeg}deg) translateY(-100%)`;
 
+            // Add click to copy functionality for highlight boxes
+            highlight.addEventListener('click', (e) => {
+                e.stopPropagation();
+                copyToClipboard(matchText);
+            });
+
             // --- PDF COORDINATE CALCULATION FOR PRINTING ---
             // Calculate PDF coordinates for printing
             const pdfTotalWidth = item.width; 
@@ -592,7 +598,7 @@ function renderSidebarOccurrenceItem(item) {
     const safeTitle = item.title || 'Unknown Title';
     li.innerHTML = `
         <div class="result-main">
-            <div class="tag">${item.tag}</div>
+            <div class="tag" title="Click to copy">${item.tag}</div>
             <div class="meta">Sheet: ${escapeHtml(safeTitle)} · Page: ${item.page}</div>
         </div>
         <div class="result-actions">
@@ -604,6 +610,16 @@ function renderSidebarOccurrenceItem(item) {
     // Apply current status styling
     applyStatusClasses(li, item.status);
     updateStatusButtonsForContainer(li, item.status);
+
+    // Add click to copy for the tag element
+    const tagElement = li.querySelector('.tag');
+    if (tagElement) {
+        tagElement.style.cursor = 'pointer';
+        tagElement.addEventListener('click', (e) => {
+            e.stopPropagation();
+            copyToClipboard(item.tag);
+        });
+    }
 
     li.addEventListener('click', () => {
         // Prefer scrolling to the actual hit, not only the page.
@@ -632,7 +648,7 @@ function renderSidebarGroupedItem(group) {
 
     li.innerHTML = `
         <div class="result-main">
-            <div class="tag">${group.tag}</div>
+            <div class="tag" title="Click to copy">${group.tag}</div>
             <div class="meta">Sheets: ${escapeHtml(titleLabel)} · Pages: ${pages.join(', ')} · Count: ${group.occurrences.length}</div>
         </div>
         <div class="result-actions">
@@ -655,6 +671,16 @@ function renderSidebarGroupedItem(group) {
 
     applyStatusClasses(li, group.status);
     updateStatusButtonsForContainer(li, group.status);
+
+    // Add click to copy for the tag element
+    const tagElement = li.querySelector('.tag');
+    if (tagElement) {
+        tagElement.style.cursor = 'pointer';
+        tagElement.addEventListener('click', (e) => {
+            e.stopPropagation();
+            copyToClipboard(group.tag);
+        });
+    }
 
     li.addEventListener('click', () => {
         // Jump to first occurrence (best effort: actual highlight if present)
@@ -810,6 +836,57 @@ function exportToCSV() {
     document.body.removeChild(link);
 }
 
+// --- COPY TO CLIPBOARD FUNCTIONALITY ---
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        showCopyFeedback(text);
+    }).catch(err => {
+        console.error('Failed to copy text: ', err);
+        // Fallback method
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+            document.execCommand('copy');
+            showCopyFeedback(text);
+        } catch (err) {
+            console.error('Fallback: Could not copy text: ', err);
+        }
+        document.body.removeChild(textArea);
+    });
+}
+
+function showCopyFeedback(text) {
+    // Create temporary tooltip
+    const tooltip = document.createElement('div');
+    tooltip.textContent = `Copied: ${text}`;
+    tooltip.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(40, 167, 69, 0.95);
+        color: white;
+        padding: 12px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        z-index: 10000;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        pointer-events: none;
+        animation: fadeInOut 1.5s ease-in-out;
+    `;
+    
+    document.body.appendChild(tooltip);
+    
+    setTimeout(() => {
+        document.body.removeChild(tooltip);
+    }, 1500);
+}
+
 function updateFileName(input) {
     const fileNameSpan = document.getElementById('fileName');
     if (input.files && input.files.length > 0) {
@@ -817,4 +894,670 @@ function updateFileName(input) {
     } else {
         fileNameSpan.textContent = "New Document.pdf";
     }
+}
+
+// ============================================
+// SYMBOL DETECTION INTEGRATION
+// ============================================
+
+// Initialize OpenCV when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    // Pre-load OpenCV.js in background
+    if (window.SymbolDetector) {
+        window.SymbolDetector.loadOpenCV().then(() => {
+            console.log('OpenCV.js ready for symbol detection');
+        }).catch(err => {
+            console.warn('OpenCV.js not loaded:', err.message);
+        });
+    }
+});
+
+/**
+ * Capture a symbol template from the PDF
+ */
+function captureSymbolTemplate() {
+    const select = document.getElementById('symbolSelect');
+    const symbolKey = select.value;
+    
+    if (!symbolKey) {
+        showToast('Please select a symbol type first', 'warning');
+        return;
+    }
+    
+    if (!pdfDoc) {
+        showToast('Please load a PDF first', 'warning');
+        return;
+    }
+    
+    if (window.SymbolDetector) {
+        window.SymbolDetector.enableTemplateCaptureMode(symbolKey);
+    } else {
+        showToast('Symbol detector not loaded', 'error');
+    }
+}
+
+/**
+ * Run symbol detection on all pages
+ */
+async function runSymbolDetection() {
+    if (!window.SymbolDetector) {
+        showToast('Symbol detector not loaded', 'error');
+        return;
+    }
+    
+    // Check if we have any templates
+    const templates = window.SymbolDetector.SYMBOL_TEMPLATES;
+    let templateCount = 0;
+    for (const key in templates) {
+        templateCount += templates[key].templates.length;
+    }
+    
+    if (templateCount === 0) {
+        showToast('First capture a symbol: Select type → Draw on PDF', 'info');
+        // Highlight the capture button
+        const captureBtn = document.getElementById('capture-btn');
+        if (captureBtn) {
+            captureBtn.style.animation = 'pulse 0.5s ease 3';
+            setTimeout(() => captureBtn.style.animation = '', 1500);
+        }
+        return;
+    }
+    
+    if (!pdfDoc) {
+        showToast('Please load a PDF first', 'warning');
+        return;
+    }
+    
+    const detectBtn = document.getElementById('detect-symbols-btn');
+    const originalText = detectBtn.innerHTML;
+    detectBtn.innerHTML = '⏳ Detecting...';
+    detectBtn.disabled = true;
+    
+    try {
+        const results = await window.SymbolDetector.detectSymbolsInAllPages(pdfWrapper);
+        
+        // Update results display
+        updateDetectionResults(results);
+        
+        if (results.length > 0) {
+            showToast(`Found ${results.length} symbol(s)!`, 'success');
+        } else {
+            showToast('No matches found. Try adjusting the template.', 'info');
+        }
+    } catch (err) {
+        console.error('Symbol detection error:', err);
+        showToast('Detection error: ' + err.message, 'error');
+    } finally {
+        detectBtn.innerHTML = originalText;
+        detectBtn.disabled = false;
+    }
+}
+
+/**
+ * Update the template chips display
+ */
+function updateTemplateStatus() {
+    const container = document.getElementById('template-status');
+    if (!container || !window.SymbolDetector) return;
+    
+    const templates = window.SymbolDetector.SYMBOL_TEMPLATES;
+    let html = '';
+    
+    for (const key in templates) {
+        const count = templates[key].templates.length;
+        if (count > 0) {
+            html += `<span class="template-chip">
+                ${templates[key].name}
+                <span class="chip-count">${count}</span>
+                <span class="chip-remove" onclick="removeTemplate('${key}')" title="Remove">×</span>
+            </span>`;
+        }
+    }
+    
+    container.innerHTML = html;
+}
+
+/**
+ * Remove a specific template type
+ */
+function removeTemplate(symbolKey) {
+    if (window.SymbolDetector && window.SymbolDetector.SYMBOL_TEMPLATES[symbolKey]) {
+        const templates = window.SymbolDetector.SYMBOL_TEMPLATES[symbolKey].templates;
+        templates.forEach(t => { if (t.mat) t.mat.delete(); });
+        window.SymbolDetector.SYMBOL_TEMPLATES[symbolKey].templates = [];
+        updateTemplateStatus();
+    }
+}
+
+/**
+ * Update detection results display
+ */
+function updateDetectionResults(results) {
+    const container = document.getElementById('detection-results');
+    if (!container) return;
+    
+    if (!results || results.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+    
+    // Group by symbol type
+    const grouped = {};
+    for (const r of results) {
+        if (!grouped[r.symbolName]) {
+            grouped[r.symbolName] = { count: 0, color: r.color };
+        }
+        grouped[r.symbolName].count++;
+    }
+    
+    let html = `<div class="result-summary">✓ Found ${results.length} symbol(s)</div>`;
+    html += '<div style="margin-top: 8px;">';
+    for (const name in grouped) {
+        html += `<div class="result-item">
+            <span><span class="symbol-dot" style="display:inline-block;background:${grouped[name].color}"></span>${name}</span>
+            <strong>${grouped[name].count}</strong>
+        </div>`;
+    }
+    html += '</div>';
+    
+    container.innerHTML = html;
+}
+
+/**
+ * Clear all symbol data
+ */
+function clearSymbolData() {
+    if (window.SymbolDetector) {
+        window.SymbolDetector.clearSymbolDetection();
+        updateTemplateStatus();
+        const resultsContainer = document.getElementById('detection-results');
+        if (resultsContainer) resultsContainer.innerHTML = '';
+        showToast('Cleared all templates and results', 'info');
+    }
+}
+
+/**
+ * Show a toast notification
+ */
+function showToast(message, type = 'info') {
+    // Remove existing toasts
+    document.querySelectorAll('.toast-notification').forEach(t => t.remove());
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast-notification';
+    
+    const colors = {
+        success: '#10b981',
+        error: '#ef4444',
+        warning: '#f59e0b',
+        info: '#3b82f6'
+    };
+    
+    const icons = {
+        success: '✓',
+        error: '✕',
+        warning: '⚠',
+        info: 'ℹ'
+    };
+    
+    toast.innerHTML = `<span class="toast-icon">${icons[type]}</span> ${message}`;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: ${colors[type]};
+        color: white;
+        padding: 12px 20px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        z-index: 10000;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        animation: slideUp 0.3s ease;
+    `;
+    
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.animation = 'fadeOut 0.3s ease forwards';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// Add CSS for toast animations
+const toastStyles = document.createElement('style');
+toastStyles.textContent = `
+    @keyframes slideUp {
+        from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+        to { transform: translateX(-50%) translateY(0); opacity: 1; }
+    }
+    @keyframes fadeOut {
+        to { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+    }
+    @keyframes pulse {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.05); box-shadow: 0 0 10px rgba(102, 126, 234, 0.5); }
+    }
+`;
+document.head.appendChild(toastStyles);
+
+// Update template status periodically (to catch captures from overlay)
+setInterval(() => {
+    updateTemplateStatus();
+}, 1000);
+
+// ============================================
+// PREDEFINED SYMBOL LOADERS
+// ============================================
+
+/**
+ * Load all valve preset symbols
+ */
+async function loadPresetValves() {
+    if (!window.PredefinedSymbols) {
+        showToast('Predefined symbols not loaded', 'error');
+        return;
+    }
+    
+    const btn = event?.target;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Loading...';
+    }
+    
+    try {
+        showToast('Loading valve templates...', 'info');
+        const result = await window.PredefinedSymbols.loadAllValves();
+        updateTemplateStatus();
+        showToast(`Loaded ${result.loaded.length} valve types!`, 'success');
+    } catch (err) {
+        console.error('Failed to load valve presets:', err);
+        showToast('Failed to load presets', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '🔧 All Valves';
+        }
+    }
+}
+
+/**
+ * Load equipment preset symbols
+ */
+async function loadPresetEquipment() {
+    if (!window.PredefinedSymbols) {
+        showToast('Predefined symbols not loaded', 'error');
+        return;
+    }
+    
+    const btn = event?.target;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Loading...';
+    }
+    
+    try {
+        showToast('Loading equipment templates...', 'info');
+        const result = await window.PredefinedSymbols.loadCommonEquipment();
+        updateTemplateStatus();
+        showToast(`Loaded ${result.loaded.length} equipment types!`, 'success');
+    } catch (err) {
+        console.error('Failed to load equipment presets:', err);
+        showToast('Failed to load presets', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '⚙️ Equipment';
+        }
+    }
+}
+
+/**
+ * Show the symbol library modal
+ */
+function showSymbolLibrary() {
+    if (!window.PredefinedSymbols) {
+        showToast('Symbol library not loaded', 'error');
+        return;
+    }
+    
+    // Create modal
+    const modal = document.createElement('div');
+    modal.id = 'symbol-library-modal';
+    modal.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 20000;
+    `;
+    
+    const symbols = window.PredefinedSymbols.getAvailablePredefinedSymbols();
+    
+    // Group by category
+    const categories = {};
+    for (const sym of symbols) {
+        const cat = sym.name.includes('Valve') ? 'Valves' : 
+                    sym.name.includes('Actuator') ? 'Actuators' :
+                    ['Pump', 'Motor', 'Heat Exchanger', 'Strainer'].some(e => sym.name.includes(e)) ? 'Equipment' :
+                    'Other';
+        if (!categories[cat]) categories[cat] = [];
+        categories[cat].push(sym);
+    }
+    
+    let gridHtml = '';
+    for (const [cat, items] of Object.entries(categories)) {
+        gridHtml += `<div class="library-category"><h4>${cat}</h4><div class="library-grid">`;
+        for (const sym of items) {
+            const svgData = window.PredefinedSymbols.PREDEFINED_SYMBOLS[sym.key]?.svg || '';
+            gridHtml += `
+                <div class="library-item" data-key="${sym.key}" onclick="loadSymbolFromLibrary('${sym.key}')">
+                    <div class="library-preview">${svgData}</div>
+                    <div class="library-name">${sym.name}</div>
+                </div>
+            `;
+        }
+        gridHtml += '</div></div>';
+    }
+    
+    modal.innerHTML = `
+        <div class="library-dialog">
+            <div class="library-header">
+                <h3>📚 Symbol Library</h3>
+                <button class="btn-close" onclick="closeSymbolLibrary()">✕</button>
+            </div>
+            <p class="library-hint">Click a symbol to load it as a template</p>
+            <div class="library-content">
+                ${gridHtml}
+            </div>
+            <div class="library-footer">
+                <button class="btn btn-secondary" onclick="loadAllFromLibrary()">Load All</button>
+                <button class="btn btn-primary" onclick="closeSymbolLibrary()">Done</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Add styles for modal
+    if (!document.getElementById('library-styles')) {
+        const styles = document.createElement('style');
+        styles.id = 'library-styles';
+        styles.textContent = `
+            .library-dialog {
+                background: white;
+                border-radius: 12px;
+                width: 90%;
+                max-width: 700px;
+                max-height: 80vh;
+                display: flex;
+                flex-direction: column;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+            }
+            .library-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 16px 20px;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            .library-header h3 {
+                margin: 0;
+                font-size: 18px;
+            }
+            .btn-close {
+                background: none;
+                border: none;
+                font-size: 20px;
+                cursor: pointer;
+                color: #6b7280;
+                padding: 4px 8px;
+            }
+            .btn-close:hover { color: #111; }
+            .library-hint {
+                margin: 0;
+                padding: 10px 20px;
+                background: #f0f9ff;
+                color: #0369a1;
+                font-size: 13px;
+            }
+            .library-content {
+                flex: 1;
+                overflow-y: auto;
+                padding: 15px 20px;
+            }
+            .library-category h4 {
+                margin: 15px 0 10px;
+                color: #374151;
+                font-size: 14px;
+                border-bottom: 1px solid #e5e7eb;
+                padding-bottom: 5px;
+            }
+            .library-category:first-child h4 {
+                margin-top: 0;
+            }
+            .library-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+                gap: 10px;
+            }
+            .library-item {
+                border: 2px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 10px;
+                text-align: center;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            }
+            .library-item:hover {
+                border-color: #3b82f6;
+                background: #eff6ff;
+                transform: translateY(-2px);
+            }
+            .library-item.loaded {
+                border-color: #10b981;
+                background: #ecfdf5;
+            }
+            .library-item.loaded::after {
+                content: '✓';
+                position: absolute;
+                top: 5px;
+                right: 5px;
+                color: #10b981;
+                font-weight: bold;
+            }
+            .library-preview {
+                height: 40px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .library-preview svg {
+                max-width: 100%;
+                max-height: 100%;
+            }
+            .library-name {
+                font-size: 11px;
+                color: #374151;
+                margin-top: 6px;
+                line-height: 1.2;
+            }
+            .library-footer {
+                padding: 15px 20px;
+                border-top: 1px solid #e5e7eb;
+                display: flex;
+                justify-content: flex-end;
+                gap: 10px;
+            }
+        `;
+        document.head.appendChild(styles);
+    }
+}
+
+/**
+ * Load a single symbol from the library
+ */
+async function loadSymbolFromLibrary(symbolKey) {
+    if (!window.PredefinedSymbols) return;
+    
+    const item = document.querySelector(`.library-item[data-key="${symbolKey}"]`);
+    if (item) {
+        item.style.opacity = '0.5';
+    }
+    
+    try {
+        await window.PredefinedSymbols.loadPredefinedSymbol(symbolKey);
+        if (item) {
+            item.classList.add('loaded');
+            item.style.opacity = '1';
+        }
+        updateTemplateStatus();
+        showToast(`Loaded ${window.PredefinedSymbols.PREDEFINED_SYMBOLS[symbolKey]?.name}`, 'success');
+    } catch (err) {
+        console.error('Failed to load symbol:', err);
+        if (item) item.style.opacity = '1';
+        showToast('Failed to load symbol', 'error');
+    }
+}
+
+/**
+ * Load all symbols from library
+ */
+async function loadAllFromLibrary() {
+    if (!window.PredefinedSymbols) return;
+    
+    showToast('Loading all symbols...', 'info');
+    
+    const symbols = window.PredefinedSymbols.getAvailablePredefinedSymbols();
+    let loaded = 0;
+    
+    for (const sym of symbols) {
+        try {
+            await window.PredefinedSymbols.loadPredefinedSymbol(sym.key);
+            const item = document.querySelector(`.library-item[data-key="${sym.key}"]`);
+            if (item) item.classList.add('loaded');
+            loaded++;
+        } catch (err) {
+            console.warn(`Failed to load ${sym.key}`);
+        }
+    }
+    
+    updateTemplateStatus();
+    showToast(`Loaded ${loaded} symbols!`, 'success');
+}
+
+/**
+ * Close the symbol library modal
+ */
+function closeSymbolLibrary() {
+    const modal = document.getElementById('symbol-library-modal');
+    if (modal) modal.remove();
+}
+
+/**
+ * Show the upload symbols dialog
+ */
+function showUploadSymbols() {
+    if (window.PredefinedSymbols && window.PredefinedSymbols.showImageUploadDialog) {
+        window.PredefinedSymbols.showImageUploadDialog();
+    } else {
+        showToast('Upload feature not available', 'error');
+    }
+}
+
+// ============================================
+// SYMBOL LIBRARY (from /symbols folder)
+// ============================================
+
+/**
+ * Load valve symbols from the /symbols folder
+ */
+async function loadLibraryValves() {
+    if (!window.SymbolLibrary) {
+        showToast('Symbol library not loaded', 'error');
+        return;
+    }
+    
+    const btn = event?.target;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Loading...';
+    }
+    
+    try {
+        showToast('Loading valve symbols from library...', 'info');
+        const result = await window.SymbolLibrary.loadAllLibraryValves();
+        updateTemplateStatus();
+        
+        if (result.loaded.length > 0) {
+            showToast(`✓ Loaded ${result.loaded.length} valve(s)!`, 'success');
+        } else {
+            showToast('No valve symbols found in /symbols folder', 'warning');
+        }
+    } catch (err) {
+        console.error('Failed to load library valves:', err);
+        showToast('Failed to load symbols', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '🔧 Valves';
+        }
+    }
+}
+
+/**
+ * Load equipment symbols from the /symbols folder
+ */
+async function loadLibraryEquipment() {
+    if (!window.SymbolLibrary) {
+        showToast('Symbol library not loaded', 'error');
+        return;
+    }
+    
+    const btn = event?.target;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Loading...';
+    }
+    
+    try {
+        showToast('Loading equipment symbols from library...', 'info');
+        const result = await window.SymbolLibrary.loadAllLibraryEquipment();
+        updateTemplateStatus();
+        
+        if (result.loaded.length > 0) {
+            showToast(`✓ Loaded ${result.loaded.length} equipment item(s)!`, 'success');
+        } else {
+            showToast('No equipment symbols found in /symbols folder', 'warning');
+        }
+    } catch (err) {
+        console.error('Failed to load library equipment:', err);
+        showToast('Failed to load symbols', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '⚙️ Equipment';
+        }
+    }
+}
+
+/**
+ * Browse all symbols in the library
+ */
+function browseSymbolLibrary() {
+    if (!window.SymbolLibrary) {
+        showToast('Symbol library not loaded', 'error');
+        return;
+    }
+    
+    window.SymbolLibrary.showLibraryBrowser();
 }
