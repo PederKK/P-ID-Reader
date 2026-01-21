@@ -3,22 +3,22 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 
 // Line tag patterns (original first as the canonical reference)
 // Original example: 10-2"-HC-1234-01-A
-const LINE_TAG_PATTERN = /\b\d+-\d+"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+\b/g;
+const LINE_TAG_PATTERN = /\b\d+-\d+"-[A-Z]+-[A-Z0-9]+-(?:\d{4}|XXXX)-[A-Z]+\b/g;
 
 // Alternate line size formats to support fractions/decimals like:
 // 35-1.1/2"-RM-A06A1-5532-ET
 // 35-3/4"-CI-A04A1-9506-N
 // Size token here allows: 2", 3/4", 1.1/2" (digits + optional .digits + optional /digits)
-const LINE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+\b/g;
+const LINE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z]+-[A-Z0-9]+-(?:\d{4}|XXXX)-[A-Z]+\b/g;
 
 // Valve tag patterns (original first as the canonical reference)
 // Original example: 35-2"-A2R-9008 OR 35-A2R-9008
-const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-\d+\b/g;
+const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 
 // Alternate valve size formats to support fractions/decimals like:
 // 35-1.1/2"-A2R-9008
 // 35-3/4"-B2R-9055
-const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-\d+\b/g;
+const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 let activeTagPattern = LINE_TAG_PATTERN;
 
 const RENDER_SCALE = 2.0; 

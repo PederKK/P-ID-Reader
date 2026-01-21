@@ -19,10 +19,10 @@ The app scans the PDF **text layer** (not pixels/OCR). That means results depend
 Search modes (choose in the sidebar):
 
 - **Line Tags** (default)
-  - Pattern (current): `\d+-\d+"-[A-Z]+-[A-Z0-9]+-\d+-[A-Z]+`
+  - Pattern (current): `\d+-\d+"-[A-Z]+-[A-Z0-9]+-(?:\d{4}|XXXX)-[A-Z]+`
   - Example: `10-2"-HC-1234-01-A`
 - **Valve Tags**
-  - Pattern (current): `\d+(?:-\d+")?-[A-Z0-9]+-\d+`
+  - Pattern (current): `\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)`
   - Example: `10-HV-1234`
 - **Both**
   - Combines the above patterns.
