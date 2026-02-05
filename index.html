@@ -74,54 +74,6 @@
                     </div>
                 </section>
 
-                <!-- Symbol Detection Section -->
-                <section class="sidebar-section">
-                    <div class="section-header">
-                        <div class="section-title">Symbol Detection</div>
-                        <span class="badge-beta">BETA</span>
-                    </div>
-                    <div id="symbol-section" class="symbol-panel">
-                        
-                        <!-- Step 1: Capture Symbol -->
-                        <div class="symbol-step">
-                            <div class="step-header">
-                                <span class="step-number">1</span>
-                                <span class="step-title">Capture symbol from PDF</span>
-                            </div>
-                            <button id="capture-btn" class="btn btn-capture-full" onclick="startCustomCapture()">
-                                ✂️ Capture Symbol
-                            </button>
-                            <div class="symbol-hint" id="symbol-hint">
-                                Draw a box around any symbol in your PDF to capture it
-                            </div>
-                        </div>
-                        
-                        <!-- Loaded Templates -->
-                        <div id="template-status" class="template-chips">
-                            <!-- Template chips will appear here -->
-                        </div>
-                        
-                        <!-- Step 2: Detect -->
-                        <div class="symbol-step detect-step">
-                            <div class="step-header">
-                                <span class="step-number">2</span>
-                                <span class="step-title">Find symbols in PDF</span>
-                            </div>
-                            <div class="step-content">
-                                <button id="detect-symbols-btn" class="btn btn-detect" onclick="runSymbolDetection()">
-                                    🔍 Detect Symbols
-                                </button>
-                                <button class="btn btn-icon-only" onclick="clearSymbolData()" title="Clear all">
-                                    🗑️
-                                </button>
-                            </div>
-                            <div id="detection-results" class="detection-results">
-                                <!-- Results summary will appear here -->
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
             </div>
 
             <div class="action-buttons">
@@ -173,7 +125,6 @@
     </div>
 
     <!-- External JS -->
-    <script src="js/symbol-detector.js"></script>
     <script src="js/print-service.js"></script>
     <script src="js/script.js"></script>
 </body>
