@@ -9,6 +9,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <!-- PDF-Lib Library for editing PDFs -->
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <!-- SheetJS for Excel/CSV line list compare -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
     <!-- External CSS -->
     <link rel="stylesheet" href="css/styles.css">
@@ -71,6 +73,22 @@
                             </label>
                             <input type="file" id="fileInput" accept="application/pdf" onchange="updateFileName(this)">
                         </div>
+                    </div>
+
+                    <div class="form-block">
+                        <div class="field-label">Line List (Excel/CSV)</div>
+                        <div class="file-input-wrapper">
+                            <label for="lineListInput" class="file-label">
+                                <span id="lineListFileName">No line list selected</span>
+                            </label>
+                            <input type="file" id="lineListInput" accept=".xlsx,.xls,.csv" onchange="updateLineListFileName(this)">
+                        </div>
+                    </div>
+
+                    <div class="form-block">
+                        <button id="open-compare-btn" class="btn btn-compare" onclick="openLineListCompareModal()">
+                            Open Line List Compare
+                        </button>
                     </div>
                 </section>
 

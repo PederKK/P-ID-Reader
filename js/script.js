@@ -33,6 +33,7 @@ let duplicateMode = 'occurrences';
 
 // DOM Elements
 const fileInput = document.getElementById('fileInput');
+const lineListInput = document.getElementById('lineListInput');
 const pdfWrapper = document.getElementById('pdf-wrapper');
 const resultList = document.getElementById('resultList');
 const statusBar = document.getElementById('status-bar');
@@ -49,12 +50,14 @@ const zoomContainer = document.getElementById('zoom-container'); // New containe
 // Optional: some UI variants include a dedicated Search button.
 // This project currently auto-runs on file selection, so the button may not exist.
 const searchBtn = document.getElementById('search-btn');
+const lineListFileName = document.getElementById('lineListFileName');
 
 // Track current page for footer updates
 let currentPageNumber = 1;
 let pdfDoc = null; // Store global PDF reference
 let pdfContentWidth = 0; // Max width of pages
 let pdfContentHeight = 0; // Total height of pages
+let compareEscapeHandler = null;
 
 // Panning Variables
 let isPanning = false;
@@ -904,6 +907,257 @@ function updateFileName(input) {
     } else {
         fileNameSpan.textContent = "New Document.pdf";
     }
+}
+
+function updateLineListFileName(input) {
+    if (!lineListFileName) return;
+
+    if (input.files && input.files.length > 0) {
+        lineListFileName.textContent = input.files[0].name;
+    } else {
+        lineListFileName.textContent = 'No line list selected';
+    }
+}
+
+function normalizeHeaderCell(value) {
+    return String(value ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '');
+}
+
+function normalizeTagValue(value) {
+    return String(value ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/\s+/g, '');
+}
+
+function buildTagStats(rawTags) {
+    const counts = new Map();
+
+    for (const rawTag of rawTags) {
+        const normalizedTag = normalizeTagValue(rawTag);
+        if (!normalizedTag) continue;
+        counts.set(normalizedTag, (counts.get(normalizedTag) || 0) + 1);
+    }
+
+    const unique = new Set(counts.keys());
+    const duplicates = Array.from(counts.entries())
+        .filter(([, count]) => count > 1)
+        .map(([tag, count]) => ({ tag, count }))
+        .sort((a, b) => a.tag.localeCompare(b.tag));
+
+    return { unique, duplicates, counts };
+}
+
+function findLineNumberColumn(rows) {
+    const maxScanRows = Math.min(rows.length, 30);
+
+    for (let rowIndex = 0; rowIndex < maxScanRows; rowIndex++) {
+        const row = rows[rowIndex] || [];
+
+        for (let colIndex = 0; colIndex < row.length; colIndex++) {
+            const header = normalizeHeaderCell(row[colIndex]);
+
+            if (
+                header === 'LINENUMBER' ||
+                header.endsWith('LINENUMBER') ||
+                header === 'LINETAG' ||
+                header === 'LINETAGNUMBER'
+            ) {
+                return {
+                    headerRowIndex: rowIndex,
+                    columnIndex: colIndex,
+                    columnLabel: String(row[colIndex] ?? '').trim() || 'Line Number'
+                };
+            }
+        }
+    }
+
+    return null;
+}
+
+async function extractLineListTagsFromFile(file) {
+    if (!window.XLSX) {
+        throw new Error('Excel parser failed to load. Refresh and try again.');
+    }
+
+    const extension = (file.name.split('.').pop() || '').toLowerCase();
+    let workbook;
+
+    if (extension === 'csv') {
+        const csvText = await file.text();
+        workbook = XLSX.read(csvText, { type: 'string' });
+    } else {
+        const buffer = await file.arrayBuffer();
+        workbook = XLSX.read(buffer, { type: 'array' });
+    }
+
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+        throw new Error('No sheets found in the line list file.');
+    }
+
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+
+    if (!rows.length) {
+        throw new Error('The line list file is empty.');
+    }
+
+    const columnInfo = findLineNumberColumn(rows);
+    if (!columnInfo) {
+        throw new Error('Could not find a "Line Number" column in the first sheet.');
+    }
+
+    const tags = [];
+    for (let rowIndex = columnInfo.headerRowIndex + 1; rowIndex < rows.length; rowIndex++) {
+        const row = rows[rowIndex] || [];
+        const value = row[columnInfo.columnIndex];
+        const normalizedTag = normalizeTagValue(value);
+        if (!normalizedTag) continue;
+        tags.push(normalizedTag);
+    }
+
+    if (tags.length === 0) {
+        throw new Error('No line tags found under the selected line number column.');
+    }
+
+    return {
+        fileName: file.name,
+        sheetName,
+        columnLabel: columnInfo.columnLabel,
+        tags
+    };
+}
+
+function renderCompareList(tags) {
+    if (!tags.length) {
+        return '<div class="compare-empty">No tags in this list.</div>';
+    }
+
+    const items = tags.map(tag => `<li class="compare-item">${escapeHtml(tag)}</li>`).join('');
+    return `<ul class="compare-list">${items}</ul>`;
+}
+
+function closeLineListCompareModal() {
+    const backdrop = document.getElementById('compare-modal-backdrop');
+    if (backdrop) backdrop.remove();
+
+    if (compareEscapeHandler) {
+        document.removeEventListener('keydown', compareEscapeHandler);
+        compareEscapeHandler = null;
+    }
+}
+
+function renderLineListCompareModal(data) {
+    closeLineListCompareModal();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'compare-modal-backdrop';
+    backdrop.className = 'compare-modal-backdrop';
+
+    backdrop.innerHTML = `
+        <div class="compare-modal" role="dialog" aria-modal="true" aria-label="Line list compare">
+            <div class="compare-modal-header">
+                <div>
+                    <h3 class="compare-modal-title">Line List Compare</h3>
+                    <p class="compare-modal-subtitle">
+                        File: ${escapeHtml(data.fileName)} | Sheet: ${escapeHtml(data.sheetName)} | Column: ${escapeHtml(data.columnLabel)}
+                    </p>
+                </div>
+                <button class="compare-modal-close" onclick="closeLineListCompareModal()" title="Close">x</button>
+            </div>
+
+            <div class="compare-summary">
+                <div class="compare-stat">
+                    <div class="compare-stat-label">P&ID Unique Tags</div>
+                    <div class="compare-stat-value">${data.pidUniqueCount}</div>
+                </div>
+                <div class="compare-stat">
+                    <div class="compare-stat-label">Line List Unique Tags</div>
+                    <div class="compare-stat-value">${data.lineUniqueCount}</div>
+                </div>
+                <div class="compare-stat">
+                    <div class="compare-stat-label">Missing In Line List</div>
+                    <div class="compare-stat-value">${data.missing.length}</div>
+                </div>
+                <div class="compare-stat">
+                    <div class="compare-stat-label">Extra In Line List</div>
+                    <div class="compare-stat-value">${data.extra.length}</div>
+                </div>
+            </div>
+
+            <div class="compare-columns">
+                <section class="compare-column">
+                    <div class="compare-column-header missing">Missing In Line List (${data.missing.length})</div>
+                    ${renderCompareList(data.missing)}
+                </section>
+                <section class="compare-column">
+                    <div class="compare-column-header extra">Extra In Line List (${data.extra.length})</div>
+                    ${renderCompareList(data.extra)}
+                </section>
+                <section class="compare-column">
+                    <div class="compare-column-header matched">Matched (${data.matched.length})</div>
+                    ${renderCompareList(data.matched)}
+                </section>
+            </div>
+        </div>
+    `;
+
+    backdrop.addEventListener('click', (event) => {
+        if (event.target === backdrop) closeLineListCompareModal();
+    });
+
+    compareEscapeHandler = (event) => {
+        if (event.key === 'Escape') closeLineListCompareModal();
+    };
+    document.addEventListener('keydown', compareEscapeHandler);
+
+    document.body.appendChild(backdrop);
+}
+
+async function openLineListCompareModal() {
+    if (!allFoundTags.length) {
+        showToast('Load and scan a PDF first', 'warning');
+        return;
+    }
+
+    const lineListFile = lineListInput?.files?.[0];
+    if (!lineListFile) {
+        showToast('Select an Excel or CSV line list first', 'warning');
+        return;
+    }
+
+    let lineListData;
+    try {
+        lineListData = await extractLineListTagsFromFile(lineListFile);
+    } catch (err) {
+        console.error('Line list parse failed:', err);
+        showToast(err.message || 'Failed to read line list file', 'error');
+        return;
+    }
+
+    const pidStats = buildTagStats(allFoundTags.map(item => item.tag));
+    const lineStats = buildTagStats(lineListData.tags);
+
+    const missing = Array.from(pidStats.unique).filter(tag => !lineStats.unique.has(tag)).sort((a, b) => a.localeCompare(b));
+    const extra = Array.from(lineStats.unique).filter(tag => !pidStats.unique.has(tag)).sort((a, b) => a.localeCompare(b));
+    const matched = Array.from(pidStats.unique).filter(tag => lineStats.unique.has(tag)).sort((a, b) => a.localeCompare(b));
+
+    renderLineListCompareModal({
+        fileName: lineListData.fileName,
+        sheetName: lineListData.sheetName,
+        columnLabel: lineListData.columnLabel,
+        pidUniqueCount: pidStats.unique.size,
+        lineUniqueCount: lineStats.unique.size,
+        missing,
+        extra,
+        matched
+    });
 }
 
 // ============================================
