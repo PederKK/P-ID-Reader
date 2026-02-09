@@ -76,7 +76,7 @@
                     </div>
 
                     <div class="form-block">
-                        <div class="field-label">Line List (Excel/CSV)</div>
+                        <div class="field-label">Line List (Excel/CSV) from Aveva Engineering</div>
                         <div class="file-input-wrapper">
                             <label for="lineListInput" class="file-label">
                                 <span id="lineListFileName">No line list selected</span>
@@ -88,6 +88,9 @@
                     <div class="form-block">
                         <button id="open-compare-btn" class="btn btn-compare" onclick="openLineListCompareModal()">
                             Open Line List Compare
+                        </button>
+                        <button id="export-line-list-btn" class="btn btn-secondary line-list-action-btn" onclick="exportLineListCompareToXlsx()">
+                            Export Line List XLSX
                         </button>
                     </div>
                 </section>
@@ -153,6 +156,7 @@
             
             <div class="status-section">
                 <div id="status-bar">Audit Complete. Found 0 tags.</div>
+                <div id="status-credit">Created by Peder and Amir</div>
                 <div class="spinner" id="spinner"></div>
                 <div class="completion-icon" id="completion-icon"></div>
             </div>
@@ -189,6 +193,47 @@
             <ul class="result-list" id="footerList"></ul>
         </div>
     </div>
+
+    <!-- Bottom Compare Drawer -->
+    <div id="compare-drawer" class="compare-drawer" aria-hidden="true">
+        <div id="compare-drawer-resize" class="compare-drawer-resize" title="Drag to resize"></div>
+        <div class="compare-drawer-header">
+            <div>
+                <div class="compare-drawer-title">Line List Compare</div>
+                <div id="compare-drawer-meta" class="compare-drawer-meta">No comparison loaded</div>
+            </div>
+            <div class="compare-drawer-actions">
+                <button class="compare-drawer-btn" onclick="toggleCompareDrawerMinimize()" title="Minimize / Expand">_</button>
+                <button class="compare-drawer-btn" onclick="closeCompareDrawer()" title="Close">x</button>
+            </div>
+        </div>
+
+        <div class="compare-drawer-toolbar">
+            <label class="compare-toggle">
+                <input type="checkbox" id="compare-show-attrs">
+                Show attributes
+            </label>
+            <label class="compare-toggle">
+                <input type="checkbox" id="compare-show-pdf-attrs">
+                Show on PDF
+            </label>
+            <label class="compare-attr-picker">
+                Attribute:
+                <select id="compare-attr-select" disabled>
+                    <option value="">None</option>
+                </select>
+            </label>
+            <button id="export-compare-btn" class="compare-export-btn" onclick="exportLineListCompareToXlsx()" disabled>
+                Export XLSX
+            </button>
+        </div>
+
+        <div id="compare-drawer-content" class="compare-drawer-content">
+            <div class="compare-empty">Run a compare to view results.</div>
+        </div>
+    </div>
+
+    <div id="compare-attribute-overlay" class="compare-attribute-overlay" aria-hidden="true"></div>
 
     <!-- External JS -->
     <script src="js/symbol-detector.js"></script>

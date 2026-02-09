@@ -30,6 +30,14 @@ let currentPdfBytes = null;
 // - occurrences: show/count every match
 // - unique: combine identical tags across pages
 let duplicateMode = 'occurrences';
+const DEFAULT_PDF_LABEL = 'New Document.pdf';
+const DEFAULT_LINE_LIST_LABEL = 'No line list selected';
+const UI_PREF_KEYS = {
+    lastPdfName: 'pidReader.lastPdfName',
+    lastLineListName: 'pidReader.lastLineListName',
+    searchMode: 'pidReader.searchMode',
+    duplicateMode: 'pidReader.duplicateMode'
+};
 
 // DOM Elements
 const fileInput = document.getElementById('fileInput');
@@ -51,27 +59,92 @@ const zoomContainer = document.getElementById('zoom-container'); // New containe
 // This project currently auto-runs on file selection, so the button may not exist.
 const searchBtn = document.getElementById('search-btn');
 const lineListFileName = document.getElementById('lineListFileName');
+const compareDrawer = document.getElementById('compare-drawer');
+const compareDrawerResizeHandle = document.getElementById('compare-drawer-resize');
+const compareDrawerMeta = document.getElementById('compare-drawer-meta');
+const compareDrawerContent = document.getElementById('compare-drawer-content');
+const compareShowAttributesCheckbox = document.getElementById('compare-show-attrs');
+const compareShowPdfAttributesCheckbox = document.getElementById('compare-show-pdf-attrs');
+const compareAttributeSelect = document.getElementById('compare-attr-select');
+const exportCompareBtn = document.getElementById('export-compare-btn');
+const compareAttributeOverlay = document.getElementById('compare-attribute-overlay');
 
 // Track current page for footer updates
 let currentPageNumber = 1;
 let pdfDoc = null; // Store global PDF reference
 let pdfContentWidth = 0; // Max width of pages
 let pdfContentHeight = 0; // Total height of pages
-let compareEscapeHandler = null;
+const compareDrawerState = {
+    fileName: '',
+    sheetName: '',
+    lineColumnLabel: '',
+    lineColumnIndex: -1,
+    lineHeaders: [],
+    pidTagLookup: new Map(),
+    lineTagAttributes: new Map(),
+    lineRows: [],
+    attributeColumns: [],
+    selectedAttributeKey: '',
+    showAttributes: false,
+    showPdfOverlayAttributes: false,
+    missing: [],
+    extra: [],
+    matched: [],
+    pidUniqueCount: 0,
+    lineUniqueCount: 0,
+    jumpCycle: new Map()
+};
+let compareResizeInProgress = false;
+let compareResizeStartY = 0;
+let compareResizeStartHeight = 0;
+let compareAttributeOverlayTimeout = null;
 
 // Panning Variables
 let isPanning = false;
 let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
+document.querySelectorAll('input[name="searchMode"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+        rememberPreference(UI_PREF_KEYS.searchMode, radio.value);
+    });
+});
+if (compareShowAttributesCheckbox) {
+    compareShowAttributesCheckbox.addEventListener('change', () => {
+        compareDrawerState.showAttributes = !!compareShowAttributesCheckbox.checked;
+        renderCompareDrawer();
+    });
+}
+if (compareShowPdfAttributesCheckbox) {
+    compareShowPdfAttributesCheckbox.addEventListener('change', () => {
+        compareDrawerState.showPdfOverlayAttributes = !!compareShowPdfAttributesCheckbox.checked;
+        renderCompareDrawer();
+    });
+}
+if (compareAttributeSelect) {
+    compareAttributeSelect.addEventListener('change', () => {
+        compareDrawerState.selectedAttributeKey = compareAttributeSelect.value || '';
+        renderCompareDrawer();
+    });
+}
+if (compareDrawerContent) {
+    compareDrawerContent.addEventListener('click', handleCompareDrawerContentClick);
+}
+if (compareDrawerResizeHandle) {
+    compareDrawerResizeHandle.addEventListener('mousedown', startCompareDrawerResize);
+}
+document.addEventListener('mousemove', onCompareDrawerResizeMove);
+document.addEventListener('mouseup', stopCompareDrawerResize);
 
 // Duplicate mode UI binding (Count all vs Combine)
 document.querySelectorAll('input[name="dupMode"]').forEach(radio => {
     radio.addEventListener('change', () => {
         duplicateMode = document.querySelector('input[name="dupMode"]:checked')?.value || 'occurrences';
+        rememberPreference(UI_PREF_KEYS.duplicateMode, duplicateMode);
         rebuildSidebar();
     });
 });
+restoreRememberedSelections();
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -109,6 +182,11 @@ viewerContainer.addEventListener('mousemove', (e) => {
 
 // --- KEYBOARD & WHEEL CONTROLS ---
 document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && compareDrawer?.classList.contains('open')) {
+        closeCompareDrawer();
+        return;
+    }
+
     // Zoom with + / -
     if ((e.key === '+' || e.key === '=') && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -160,6 +238,11 @@ function applyZoom() {
 
 // Scroll listener to update footer based on visible page
 document.getElementById('viewer-container').addEventListener('scroll', debounce(updateFooterForVisiblePage, 200));
+document.getElementById('viewer-container').addEventListener('scroll', () => {
+    if (compareAttributeOverlay?.classList.contains('visible')) {
+        hideCompareAttributeOverlay();
+    }
+}, { passive: true });
 
 function debounce(func, wait) {
     let timeout;
@@ -251,6 +334,8 @@ async function runAudit(file) {
     resultList.innerHTML = '';
     footerList.innerHTML = '';
     allFoundTags = [];
+    resetCompareDrawerState();
+    closeCompareDrawer();
     currentPageNumber = 1;
     exportBtn.style.display = 'none';
     printBtn.style.display = 'none';
@@ -903,9 +988,12 @@ function showCopyFeedback(text) {
 function updateFileName(input) {
     const fileNameSpan = document.getElementById('fileName');
     if (input.files && input.files.length > 0) {
-        fileNameSpan.textContent = input.files[0].name;
+        const selectedName = input.files[0].name;
+        fileNameSpan.textContent = selectedName;
+        rememberPreference(UI_PREF_KEYS.lastPdfName, selectedName);
     } else {
-        fileNameSpan.textContent = "New Document.pdf";
+        fileNameSpan.textContent = DEFAULT_PDF_LABEL;
+        forgetPreference(UI_PREF_KEYS.lastPdfName);
     }
 }
 
@@ -913,9 +1001,64 @@ function updateLineListFileName(input) {
     if (!lineListFileName) return;
 
     if (input.files && input.files.length > 0) {
-        lineListFileName.textContent = input.files[0].name;
+        const selectedName = input.files[0].name;
+        lineListFileName.textContent = selectedName;
+        rememberPreference(UI_PREF_KEYS.lastLineListName, selectedName);
     } else {
-        lineListFileName.textContent = 'No line list selected';
+        lineListFileName.textContent = DEFAULT_LINE_LIST_LABEL;
+        forgetPreference(UI_PREF_KEYS.lastLineListName);
+    }
+}
+
+function rememberPreference(key, value) {
+    try {
+        localStorage.setItem(key, value);
+    } catch (err) {
+        // Ignore storage errors (private mode/blocked storage) without breaking UI behavior.
+    }
+}
+
+function readPreference(key) {
+    try {
+        return localStorage.getItem(key);
+    } catch (err) {
+        return null;
+    }
+}
+
+function forgetPreference(key) {
+    try {
+        localStorage.removeItem(key);
+    } catch (err) {
+        // Ignore storage errors safely.
+    }
+}
+
+function restoreRememberedSelections() {
+    const fileNameSpan = document.getElementById('fileName');
+    const savedPdfName = readPreference(UI_PREF_KEYS.lastPdfName);
+    if (fileNameSpan && savedPdfName) {
+        fileNameSpan.textContent = `${savedPdfName} (last used)`;
+    }
+
+    const savedLineListName = readPreference(UI_PREF_KEYS.lastLineListName);
+    if (lineListFileName && savedLineListName) {
+        lineListFileName.textContent = `${savedLineListName} (last used)`;
+    }
+
+    const savedSearchMode = readPreference(UI_PREF_KEYS.searchMode);
+    if (savedSearchMode) {
+        const searchModeRadio = document.querySelector(`input[name="searchMode"][value="${savedSearchMode}"]`);
+        if (searchModeRadio) searchModeRadio.checked = true;
+    }
+
+    const savedDuplicateMode = readPreference(UI_PREF_KEYS.duplicateMode);
+    if (savedDuplicateMode) {
+        const duplicateModeRadio = document.querySelector(`input[name="dupMode"][value="${savedDuplicateMode}"]`);
+        if (duplicateModeRadio) {
+            duplicateModeRadio.checked = true;
+            duplicateMode = savedDuplicateMode;
+        }
     }
 }
 
@@ -933,6 +1076,43 @@ function normalizeTagValue(value) {
         .replace(/[\u2013\u2014]/g, '-')
         .replace(/[\u201C\u201D]/g, '"')
         .replace(/\s+/g, '');
+}
+
+function resetCompareDrawerState() {
+    compareDrawerState.fileName = '';
+    compareDrawerState.sheetName = '';
+    compareDrawerState.lineColumnLabel = '';
+    compareDrawerState.lineColumnIndex = -1;
+    compareDrawerState.lineHeaders = [];
+    compareDrawerState.pidTagLookup = new Map();
+    compareDrawerState.lineTagAttributes = new Map();
+    compareDrawerState.lineRows = [];
+    compareDrawerState.attributeColumns = [];
+    compareDrawerState.selectedAttributeKey = '';
+    compareDrawerState.showAttributes = false;
+    compareDrawerState.showPdfOverlayAttributes = false;
+    compareDrawerState.missing = [];
+    compareDrawerState.extra = [];
+    compareDrawerState.matched = [];
+    compareDrawerState.pidUniqueCount = 0;
+    compareDrawerState.lineUniqueCount = 0;
+    compareDrawerState.jumpCycle = new Map();
+
+    if (compareShowAttributesCheckbox) compareShowAttributesCheckbox.checked = false;
+    if (compareShowPdfAttributesCheckbox) {
+        compareShowPdfAttributesCheckbox.checked = false;
+        compareShowPdfAttributesCheckbox.disabled = true;
+    }
+    if (compareAttributeSelect) {
+        compareAttributeSelect.innerHTML = '<option value="">None</option>';
+        compareAttributeSelect.disabled = true;
+    }
+    if (compareDrawerMeta) compareDrawerMeta.textContent = 'No comparison loaded';
+    if (compareDrawerContent) compareDrawerContent.innerHTML = '<div class="compare-empty">Run a compare to view results.</div>';
+    if (exportCompareBtn) exportCompareBtn.disabled = true;
+
+    hideCompareAttributeOverlay();
+    clearPdfAttributeOverlays();
 }
 
 function buildTagStats(rawTags) {
@@ -980,6 +1160,69 @@ function findLineNumberColumn(rows) {
     return null;
 }
 
+function chooseDefaultAttributeKey(columns) {
+    if (!columns.length) return '';
+
+    const preferred = [
+        'NOMINALPIPESIZE',
+        'PIPINGSPECIFICATION',
+        'FLUIDCODE',
+        'DISPLAYNAME'
+    ];
+
+    for (const wanted of preferred) {
+        const found = columns.find(col => col.key === wanted || col.key.startsWith(`${wanted}_`));
+        if (found) return found.key;
+    }
+
+    return columns[0].key;
+}
+
+function buildAttributeColumns(headerRow, lineColumnIndex) {
+    const usedKeys = new Set();
+    const columns = [];
+
+    for (let colIndex = 0; colIndex < headerRow.length; colIndex++) {
+        if (colIndex === lineColumnIndex) continue;
+
+        const label = String(headerRow[colIndex] ?? '').trim();
+        if (!label) continue;
+
+        const baseKey = normalizeHeaderCell(label) || `COLUMN${colIndex + 1}`;
+        let key = baseKey;
+        let suffix = 2;
+        while (usedKeys.has(key)) {
+            key = `${baseKey}_${suffix}`;
+            suffix++;
+        }
+        usedKeys.add(key);
+
+        columns.push({ key, label, index: colIndex });
+    }
+
+    return columns;
+}
+
+function buildPidTagLookup() {
+    const lookup = new Map();
+
+    for (const item of allFoundTags) {
+        const normalizedTag = normalizeTagValue(item.tag);
+        if (!normalizedTag) continue;
+
+        if (!lookup.has(normalizedTag)) {
+            lookup.set(normalizedTag, []);
+        }
+        lookup.get(normalizedTag).push(item);
+    }
+
+    for (const occurrences of lookup.values()) {
+        occurrences.sort((a, b) => (a.page - b.page) || (a.id - b.id));
+    }
+
+    return lookup;
+}
+
 async function extractLineListTagsFromFile(file) {
     if (!window.XLSX) {
         throw new Error('Excel parser failed to load. Refresh and try again.');
@@ -1013,13 +1256,42 @@ async function extractLineListTagsFromFile(file) {
         throw new Error('Could not find a "Line Number" column in the first sheet.');
     }
 
+    const headerRow = rows[columnInfo.headerRowIndex] || [];
+    const lineHeaders = headerRow.map((cell, index) => {
+        const label = String(cell ?? '').trim();
+        return label || `Column ${index + 1}`;
+    });
+    const attributeColumns = buildAttributeColumns(headerRow, columnInfo.columnIndex);
+
     const tags = [];
+    const lineRows = [];
+    const lineTagAttributes = new Map();
     for (let rowIndex = columnInfo.headerRowIndex + 1; rowIndex < rows.length; rowIndex++) {
         const row = rows[rowIndex] || [];
+        const rowCells = lineHeaders.map((_, colIndex) => String(row[colIndex] ?? ''));
         const value = row[columnInfo.columnIndex];
         const normalizedTag = normalizeTagValue(value);
+        const rowAttributes = {};
+        for (const col of attributeColumns) {
+            const attributeValue = String(row[col.index] ?? '').trim();
+            if (!attributeValue) continue;
+            rowAttributes[col.key] = attributeValue;
+        }
+        lineRows.push({ tag: normalizedTag, cells: rowCells, attributes: rowAttributes });
+
         if (!normalizedTag) continue;
         tags.push(normalizedTag);
+
+        if (!lineTagAttributes.has(normalizedTag)) {
+            lineTagAttributes.set(normalizedTag, {});
+        }
+
+        const mergedAttributes = lineTagAttributes.get(normalizedTag);
+        for (const [attributeKey, attributeValue] of Object.entries(rowAttributes)) {
+            if (!mergedAttributes[attributeKey]) {
+                mergedAttributes[attributeKey] = attributeValue;
+            }
+        }
     }
 
     if (tags.length === 0) {
@@ -1030,94 +1302,328 @@ async function extractLineListTagsFromFile(file) {
         fileName: file.name,
         sheetName,
         columnLabel: columnInfo.columnLabel,
-        tags
+        columnIndex: columnInfo.columnIndex,
+        lineHeaders,
+        tags,
+        lineRows,
+        lineTagAttributes,
+        attributeColumns
     };
 }
 
-function renderCompareList(tags) {
+function getAttributeLabel(attributeKey) {
+    const col = compareDrawerState.attributeColumns.find(column => column.key === attributeKey);
+    return col ? col.label : attributeKey;
+}
+
+function renderCompareList(tags, listType) {
     if (!tags.length) {
         return '<div class="compare-empty">No tags in this list.</div>';
     }
 
-    const items = tags.map(tag => `<li class="compare-item">${escapeHtml(tag)}</li>`).join('');
+    const selectedAttributeKey = compareDrawerState.showAttributes ? compareDrawerState.selectedAttributeKey : '';
+    const attributeLabel = selectedAttributeKey ? getAttributeLabel(selectedAttributeKey) : '';
+
+    const items = tags.map(tag => {
+        const jumpable = compareDrawerState.pidTagLookup.has(tag);
+        const occurrences = jumpable ? compareDrawerState.pidTagLookup.get(tag).length : 0;
+
+        let note = '';
+        if (listType === 'extra') {
+            note = 'Only in line list (not in P&ID).';
+        } else if (jumpable && occurrences > 1) {
+            note = `Click to locate (${occurrences} hits, cycles each click).`;
+        } else if (jumpable) {
+            note = 'Click to locate on P&ID.';
+        } else {
+            note = 'No P&ID location found.';
+        }
+
+        const attributeValue = selectedAttributeKey
+            ? (compareDrawerState.lineTagAttributes.get(tag)?.[selectedAttributeKey] || '')
+            : '';
+
+        return `
+            <li class="compare-item ${jumpable ? 'jumpable' : ''}" data-tag="${escapeHtml(tag)}" data-jump="${jumpable ? '1' : '0'}">
+                <span class="compare-item-main">${escapeHtml(tag)}</span>
+                ${attributeValue ? `<div class="compare-item-attr">${escapeHtml(attributeLabel)}: ${escapeHtml(attributeValue)}</div>` : ''}
+                <div class="compare-item-note">${escapeHtml(note)}</div>
+            </li>
+        `;
+    }).join('');
+
     return `<ul class="compare-list">${items}</ul>`;
 }
 
-function closeLineListCompareModal() {
-    const backdrop = document.getElementById('compare-modal-backdrop');
-    if (backdrop) backdrop.remove();
+function hideCompareAttributeOverlay() {
+    if (!compareAttributeOverlay) return;
 
-    if (compareEscapeHandler) {
-        document.removeEventListener('keydown', compareEscapeHandler);
-        compareEscapeHandler = null;
+    compareAttributeOverlay.classList.remove('visible');
+    compareAttributeOverlay.setAttribute('aria-hidden', 'true');
+    if (compareAttributeOverlayTimeout) {
+        clearTimeout(compareAttributeOverlayTimeout);
+        compareAttributeOverlayTimeout = null;
     }
 }
 
-function renderLineListCompareModal(data) {
-    closeLineListCompareModal();
+function clearPdfAttributeOverlays() {
+    document.querySelectorAll('.compare-pdf-attr-label').forEach(el => el.remove());
+}
 
-    const backdrop = document.createElement('div');
-    backdrop.id = 'compare-modal-backdrop';
-    backdrop.className = 'compare-modal-backdrop';
+function updatePdfAttributeOverlays() {
+    clearPdfAttributeOverlays();
 
-    backdrop.innerHTML = `
-        <div class="compare-modal" role="dialog" aria-modal="true" aria-label="Line list compare">
-            <div class="compare-modal-header">
-                <div>
-                    <h3 class="compare-modal-title">Line List Compare</h3>
-                    <p class="compare-modal-subtitle">
-                        File: ${escapeHtml(data.fileName)} | Sheet: ${escapeHtml(data.sheetName)} | Column: ${escapeHtml(data.columnLabel)}
-                    </p>
-                </div>
-                <button class="compare-modal-close" onclick="closeLineListCompareModal()" title="Close">x</button>
+    if (!compareDrawerState.showAttributes || !compareDrawerState.showPdfOverlayAttributes) {
+        return;
+    }
+
+    const attributeKey = compareDrawerState.selectedAttributeKey;
+    if (!attributeKey) {
+        return;
+    }
+
+    const seen = new Set();
+    for (const item of allFoundTags) {
+        if (!item?.element || !item.element.parentElement) continue;
+
+        const normalizedTag = normalizeTagValue(item.tag);
+        if (!normalizedTag) continue;
+
+        // Avoid stacking repeated labels for the same tag on the same page.
+        const uniqueOnPageKey = `${item.page}|${normalizedTag}`;
+        if (seen.has(uniqueOnPageKey)) continue;
+
+        const attributeValue = compareDrawerState.lineTagAttributes.get(normalizedTag)?.[attributeKey];
+        if (!attributeValue) continue;
+
+        seen.add(uniqueOnPageKey);
+
+        const label = document.createElement('div');
+        label.className = 'compare-pdf-attr-label';
+        label.textContent = attributeValue;
+        label.title = `${item.tag} | ${getAttributeLabel(attributeKey)}: ${attributeValue}`;
+
+        const left = parseFloat(item.element.style.left || '0');
+        const top = parseFloat(item.element.style.top || '0');
+        const height = parseFloat(item.element.style.height || '0');
+        label.style.left = `${Math.max(0, left)}px`;
+        label.style.top = `${Math.max(0, top + height + 2)}px`;
+
+        item.element.parentElement.appendChild(label);
+    }
+}
+
+function showCompareAttributeOverlay(targetItem, normalizedTag) {
+    const attributeKey = compareDrawerState.selectedAttributeKey;
+    if (!compareDrawerState.showAttributes || !attributeKey || !compareAttributeOverlay) {
+        hideCompareAttributeOverlay();
+        return;
+    }
+
+    const attributeValue = compareDrawerState.lineTagAttributes.get(normalizedTag)?.[attributeKey];
+    if (!attributeValue) {
+        hideCompareAttributeOverlay();
+        return;
+    }
+
+    const attributeLabel = getAttributeLabel(attributeKey);
+    compareAttributeOverlay.textContent = `${targetItem.tag} | ${attributeLabel}: ${attributeValue}`;
+
+    let left = 16;
+    let top = 16;
+    if (targetItem?.element) {
+        const rect = targetItem.element.getBoundingClientRect();
+        left = Math.max(12, Math.min(window.innerWidth - 300, rect.left));
+        top = Math.max(12, Math.min(window.innerHeight - 56, rect.bottom + 8));
+    }
+
+    compareAttributeOverlay.style.left = `${left}px`;
+    compareAttributeOverlay.style.top = `${top}px`;
+    compareAttributeOverlay.classList.add('visible');
+    compareAttributeOverlay.setAttribute('aria-hidden', 'false');
+
+    if (compareAttributeOverlayTimeout) {
+        clearTimeout(compareAttributeOverlayTimeout);
+    }
+    compareAttributeOverlayTimeout = setTimeout(() => {
+        hideCompareAttributeOverlay();
+    }, 3500);
+}
+
+function renderCompareDrawer() {
+    if (!compareDrawerContent) return;
+
+    if (!compareDrawerState.showAttributes) {
+        hideCompareAttributeOverlay();
+    }
+
+    if (!compareDrawerState.fileName) {
+        compareDrawerContent.innerHTML = '<div class="compare-empty">Run a compare to view results.</div>';
+        if (exportCompareBtn) exportCompareBtn.disabled = true;
+        return;
+    }
+    if (exportCompareBtn) exportCompareBtn.disabled = false;
+
+    if (compareDrawerMeta) {
+        compareDrawerMeta.textContent = `File: ${compareDrawerState.fileName} | Sheet: ${compareDrawerState.sheetName} | Column: ${compareDrawerState.lineColumnLabel}`;
+    }
+
+    if (compareShowAttributesCheckbox) {
+        compareShowAttributesCheckbox.checked = compareDrawerState.showAttributes;
+    }
+    if (compareShowPdfAttributesCheckbox) {
+        compareShowPdfAttributesCheckbox.checked = compareDrawerState.showPdfOverlayAttributes;
+        compareShowPdfAttributesCheckbox.disabled =
+            compareDrawerState.attributeColumns.length === 0 || !compareDrawerState.showAttributes;
+    }
+
+    if (compareAttributeSelect) {
+        compareAttributeSelect.innerHTML = '';
+        compareAttributeSelect.disabled = compareDrawerState.attributeColumns.length === 0 || !compareDrawerState.showAttributes;
+
+        if (compareDrawerState.attributeColumns.length === 0) {
+            compareAttributeSelect.innerHTML = '<option value="">No attributes found</option>';
+            compareDrawerState.selectedAttributeKey = '';
+        } else {
+            for (const column of compareDrawerState.attributeColumns) {
+                const option = document.createElement('option');
+                option.value = column.key;
+                option.textContent = column.label;
+                compareAttributeSelect.appendChild(option);
+            }
+
+            const validKey = compareDrawerState.attributeColumns.some(col => col.key === compareDrawerState.selectedAttributeKey);
+            if (!validKey) {
+                compareDrawerState.selectedAttributeKey = chooseDefaultAttributeKey(compareDrawerState.attributeColumns);
+            }
+            compareAttributeSelect.value = compareDrawerState.selectedAttributeKey;
+        }
+    }
+
+    compareDrawerContent.innerHTML = `
+        <div class="compare-summary">
+            <div class="compare-stat">
+                <div class="compare-stat-label">P&ID Unique Tags</div>
+                <div class="compare-stat-value">${compareDrawerState.pidUniqueCount}</div>
             </div>
-
-            <div class="compare-summary">
-                <div class="compare-stat">
-                    <div class="compare-stat-label">P&ID Unique Tags</div>
-                    <div class="compare-stat-value">${data.pidUniqueCount}</div>
-                </div>
-                <div class="compare-stat">
-                    <div class="compare-stat-label">Line List Unique Tags</div>
-                    <div class="compare-stat-value">${data.lineUniqueCount}</div>
-                </div>
-                <div class="compare-stat">
-                    <div class="compare-stat-label">Missing In Line List</div>
-                    <div class="compare-stat-value">${data.missing.length}</div>
-                </div>
-                <div class="compare-stat">
-                    <div class="compare-stat-label">Extra In Line List</div>
-                    <div class="compare-stat-value">${data.extra.length}</div>
-                </div>
+            <div class="compare-stat">
+                <div class="compare-stat-label">Line List Unique Tags</div>
+                <div class="compare-stat-value">${compareDrawerState.lineUniqueCount}</div>
             </div>
-
-            <div class="compare-columns">
-                <section class="compare-column">
-                    <div class="compare-column-header missing">Missing In Line List (${data.missing.length})</div>
-                    ${renderCompareList(data.missing)}
-                </section>
-                <section class="compare-column">
-                    <div class="compare-column-header extra">Extra In Line List (${data.extra.length})</div>
-                    ${renderCompareList(data.extra)}
-                </section>
-                <section class="compare-column">
-                    <div class="compare-column-header matched">Matched (${data.matched.length})</div>
-                    ${renderCompareList(data.matched)}
-                </section>
+            <div class="compare-stat">
+                <div class="compare-stat-label">Missing In Line List</div>
+                <div class="compare-stat-value">${compareDrawerState.missing.length}</div>
             </div>
+            <div class="compare-stat">
+                <div class="compare-stat-label">Extra In Line List</div>
+                <div class="compare-stat-value">${compareDrawerState.extra.length}</div>
+            </div>
+        </div>
+
+        <div class="compare-columns">
+            <section class="compare-column">
+                <div class="compare-column-header missing">Missing In Line List (${compareDrawerState.missing.length})</div>
+                ${renderCompareList(compareDrawerState.missing, 'missing')}
+            </section>
+            <section class="compare-column">
+                <div class="compare-column-header extra">Extra In Line List (${compareDrawerState.extra.length})</div>
+                ${renderCompareList(compareDrawerState.extra, 'extra')}
+            </section>
+            <section class="compare-column">
+                <div class="compare-column-header matched">Matched (${compareDrawerState.matched.length})</div>
+                ${renderCompareList(compareDrawerState.matched, 'matched')}
+            </section>
         </div>
     `;
 
-    backdrop.addEventListener('click', (event) => {
-        if (event.target === backdrop) closeLineListCompareModal();
-    });
+    updatePdfAttributeOverlays();
+}
 
-    compareEscapeHandler = (event) => {
-        if (event.key === 'Escape') closeLineListCompareModal();
-    };
-    document.addEventListener('keydown', compareEscapeHandler);
+function openCompareDrawer() {
+    if (!compareDrawer) return;
+    compareDrawer.classList.add('open');
+    compareDrawer.classList.remove('minimized');
+    compareDrawer.setAttribute('aria-hidden', 'false');
+    stickyFooter?.classList.add('collapsed');
+}
 
-    document.body.appendChild(backdrop);
+function closeCompareDrawer() {
+    if (!compareDrawer) return;
+    compareDrawer.classList.remove('open');
+    compareDrawer.classList.remove('minimized');
+    compareDrawer.style.height = '';
+    compareDrawer.setAttribute('aria-hidden', 'true');
+    hideCompareAttributeOverlay();
+    clearPdfAttributeOverlays();
+}
+
+function toggleCompareDrawerMinimize() {
+    if (!compareDrawer || !compareDrawer.classList.contains('open')) return;
+    compareDrawer.classList.toggle('minimized');
+}
+
+function startCompareDrawerResize(event) {
+    if (!compareDrawer || !compareDrawer.classList.contains('open') || compareDrawer.classList.contains('minimized')) {
+        return;
+    }
+
+    compareResizeInProgress = true;
+    compareResizeStartY = event.clientY;
+    compareResizeStartHeight = compareDrawer.getBoundingClientRect().height;
+    document.body.style.userSelect = 'none';
+}
+
+function onCompareDrawerResizeMove(event) {
+    if (!compareResizeInProgress || !compareDrawer) return;
+
+    const deltaY = compareResizeStartY - event.clientY;
+    const nextHeight = compareResizeStartHeight + deltaY;
+    const minHeight = 220;
+    const maxHeight = Math.round(window.innerHeight * 0.85);
+    const clamped = Math.max(minHeight, Math.min(maxHeight, nextHeight));
+    compareDrawer.style.height = `${clamped}px`;
+}
+
+function stopCompareDrawerResize() {
+    if (!compareResizeInProgress) return;
+    compareResizeInProgress = false;
+    document.body.style.userSelect = '';
+}
+
+function jumpToTagFromCompare(normalizedTag) {
+    const occurrences = compareDrawerState.pidTagLookup.get(normalizedTag);
+    if (!occurrences || occurrences.length === 0) {
+        showToast('Tag not found in the loaded P&ID', 'warning');
+        return;
+    }
+
+    const cycleIndex = compareDrawerState.jumpCycle.get(normalizedTag) || 0;
+    const target = occurrences[cycleIndex % occurrences.length];
+    const nextIndex = (cycleIndex + 1) % occurrences.length;
+    compareDrawerState.jumpCycle.set(normalizedTag, nextIndex);
+
+    if (target.element) {
+        target.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        target.element.classList.add('active');
+        setTimeout(() => target.element?.classList.remove('active'), 900);
+    } else {
+        document.getElementById(`page-${target.page}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    showCompareAttributeOverlay(target, normalizedTag);
+}
+
+function handleCompareDrawerContentClick(event) {
+    const row = event.target.closest('.compare-item');
+    if (!row) return;
+
+    const canJump = row.getAttribute('data-jump') === '1';
+    if (!canJump) return;
+
+    const normalizedTag = normalizeTagValue(row.getAttribute('data-tag'));
+    if (!normalizedTag) return;
+
+    jumpToTagFromCompare(normalizedTag);
 }
 
 async function openLineListCompareModal() {
@@ -1148,16 +1654,112 @@ async function openLineListCompareModal() {
     const extra = Array.from(lineStats.unique).filter(tag => !pidStats.unique.has(tag)).sort((a, b) => a.localeCompare(b));
     const matched = Array.from(pidStats.unique).filter(tag => lineStats.unique.has(tag)).sort((a, b) => a.localeCompare(b));
 
-    renderLineListCompareModal({
-        fileName: lineListData.fileName,
-        sheetName: lineListData.sheetName,
-        columnLabel: lineListData.columnLabel,
-        pidUniqueCount: pidStats.unique.size,
-        lineUniqueCount: lineStats.unique.size,
-        missing,
-        extra,
-        matched
-    });
+    compareDrawerState.fileName = lineListData.fileName;
+    compareDrawerState.sheetName = lineListData.sheetName;
+    compareDrawerState.lineColumnLabel = lineListData.columnLabel;
+    compareDrawerState.lineColumnIndex = lineListData.columnIndex;
+    compareDrawerState.lineHeaders = lineListData.lineHeaders;
+    compareDrawerState.pidTagLookup = buildPidTagLookup();
+    compareDrawerState.lineTagAttributes = lineListData.lineTagAttributes;
+    compareDrawerState.lineRows = lineListData.lineRows;
+    compareDrawerState.attributeColumns = lineListData.attributeColumns;
+    compareDrawerState.selectedAttributeKey = chooseDefaultAttributeKey(lineListData.attributeColumns);
+    compareDrawerState.showAttributes = false;
+    compareDrawerState.showPdfOverlayAttributes = false;
+    compareDrawerState.missing = missing;
+    compareDrawerState.extra = extra;
+    compareDrawerState.matched = matched;
+    compareDrawerState.pidUniqueCount = pidStats.unique.size;
+    compareDrawerState.lineUniqueCount = lineStats.unique.size;
+    compareDrawerState.jumpCycle = new Map();
+
+    renderCompareDrawer();
+    openCompareDrawer();
+    hideCompareAttributeOverlay();
+}
+
+function sanitizeSheetName(name) {
+    const fallback = 'Compare';
+    const cleaned = String(name || fallback)
+        .replace(/[\\/?*[\]:]/g, ' ')
+        .trim();
+    if (!cleaned) return fallback;
+    return cleaned.slice(0, 31);
+}
+
+function buildCompareExportRows() {
+    const sourceHeaders = compareDrawerState.lineHeaders.length
+        ? compareDrawerState.lineHeaders.slice()
+        : [compareDrawerState.lineColumnLabel || 'Line Number'];
+    const inPidHeader = 'In PID?';
+    const rows = [[...sourceHeaders, inPidHeader]];
+    const seenLineTags = new Set();
+
+    for (const lineRow of compareDrawerState.lineRows) {
+        const normalizedTag = normalizeTagValue(lineRow?.tag);
+        if (normalizedTag) {
+            seenLineTags.add(normalizedTag);
+        }
+
+        const sourceCells = sourceHeaders.map((_, colIndex) => String(lineRow?.cells?.[colIndex] ?? ''));
+        const inPidValue = normalizedTag
+            ? (compareDrawerState.pidTagLookup.has(normalizedTag) ? 'Yes' : 'No')
+            : '';
+        rows.push([...sourceCells, inPidValue]);
+    }
+
+    for (const missingTag of compareDrawerState.missing) {
+        if (seenLineTags.has(missingTag)) continue;
+
+        const sourceCells = new Array(sourceHeaders.length).fill('');
+        const lineColumnIndex = Number.isInteger(compareDrawerState.lineColumnIndex)
+            ? compareDrawerState.lineColumnIndex
+            : 0;
+        if (lineColumnIndex >= 0 && lineColumnIndex < sourceCells.length) {
+            sourceCells[lineColumnIndex] = missingTag;
+        } else if (sourceCells.length > 0) {
+            sourceCells[0] = missingTag;
+        }
+
+        rows.push([...sourceCells, 'Yes']);
+    }
+
+    return rows;
+}
+
+async function exportLineListCompareToXlsx() {
+    if (!window.XLSX) {
+        showToast('Excel export library is not available', 'error');
+        return;
+    }
+
+    const selectedLineListName = lineListInput?.files?.[0]?.name || '';
+    const compareNeedsRefresh =
+        !compareDrawerState.fileName ||
+        (selectedLineListName && compareDrawerState.fileName !== selectedLineListName);
+    if (compareNeedsRefresh) {
+        await openLineListCompareModal();
+        if (!compareDrawerState.fileName) {
+            return;
+        }
+    }
+
+    const tableRows = buildCompareExportRows();
+    if (tableRows.length <= 1) {
+        showToast('No compare rows to export', 'warning');
+        return;
+    }
+
+    const worksheet = XLSX.utils.aoa_to_sheet(tableRows);
+    const workbook = XLSX.utils.book_new();
+    const sheetName = sanitizeSheetName(compareDrawerState.sheetName || 'Compare');
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+
+    const baseName = compareDrawerState.fileName.replace(/\.[^/.]+$/, '') || 'line_list';
+    const exportName = `${baseName}_pid_compare.xlsx`;
+    XLSX.writeFile(workbook, exportName, { bookType: 'xlsx' });
+
+    showToast(`Exported ${tableRows.length - 1} rows to ${exportName}`, 'success');
 }
 
 // ============================================
