@@ -25,13 +25,23 @@ async function saveAnnotatedPDF(pdfBytes, tags) {
             // Determine color based on status
             let color = rgb(1, 0.9, 0); // Yellow default (rgba(255, 230, 0))
             let borderColor = rgb(0.9, 0.7, 0);
+            let opacity = 0.4;
+
+            // Connector mode default styling (blue, low opacity)
+            if (tag.mode === 'connectors' && tag.status === 'Pending') {
+                color = rgb(0, 0.337, 0.702); // ~#0056b3
+                borderColor = rgb(0, 0.337, 0.702);
+                opacity = 0.22;
+            }
             
             if (tag.status === 'Correct') {
                 color = rgb(0.16, 0.65, 0.27); // Green #28a745
                 borderColor = rgb(0.1, 0.5, 0.2);
+                opacity = 0.3;
             } else if (tag.status === 'Incorrect') {
                 color = rgb(0.86, 0.21, 0.27); // Red #dc3545
                 borderColor = rgb(0.7, 0.1, 0.1);
+                opacity = 0.3;
             }
 
             // Draw rectangle
@@ -53,11 +63,24 @@ async function saveAnnotatedPDF(pdfBytes, tags) {
                 width: width,
                 height: height,
                 color: color,
-                opacity: 0.4,
+                opacity: opacity,
                 borderColor: borderColor,
                 borderWidth: 1,
                 rotate: degrees(rotation || 0)
             });
+
+            // Draw connector replacement label (red) under the rectangle
+            if (tag.mode === 'connectors' && tag.replacementText) {
+                const labelSize = 11.88;
+                const labelGap = height * 0.77;
+                page.drawText(String(tag.replacementText), {
+                    x: x,
+                    y: (y - (height * 0.2)) - labelGap,
+                    size: labelSize,
+                    color: rgb(0.86, 0.21, 0.27),
+                    rotate: degrees(rotation || 0)
+                });
+            }
         }
 
         const pdfDataUri = await pdfDoc.saveAsBase64({ dataUri: true });

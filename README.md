@@ -28,9 +28,9 @@ Search modes (choose in the sidebar):
   - Combines the above patterns.
 
 - **Connectors**
-  - Label (current): `FMG-PE-PID-Digits`
-  - Pattern (current): `FMG-PE-PID-\\d{6}`
-  - Example: `FMG-PE-PID-123456`
+  - Label (current): `FMG-PE-PID-3digits`
+  - Pattern (current): `FMG-PE-PID-\\d{3}`
+  - Example: `FMG-PE-PID-001`
 
 Each match becomes a clickable highlight on the page and an entry in the sidebar.
 

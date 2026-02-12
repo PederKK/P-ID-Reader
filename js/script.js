@@ -21,8 +21,25 @@ const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 
 // Connector label pattern (minimal initial implementation)
-// Matches labels like: FMG-PE-PID-123456
-const CONNECTOR_LABEL_PATTERN = /\bFMG-PE-PID-\d{6}\b/g;
+// Matches labels like: FMG-PE-PID-001
+const CONNECTOR_LABEL_PATTERN = /\bFMG-PE-PID-\d{3}\b/g;
+
+// Connector replacement table (initial set)
+const CONNECTOR_REPLACEMENTS = Object.freeze({
+    'FMG-PE-PID-001': '00-P-XB-00001_01',
+    'FMG-PE-PID-003': '38-P-XB-00001_01',
+    'FMG-PE-PID-004': '38-P-XB-00002_01',
+    'FMG-PE-PID-005': '38-P-XB-00003_01',
+    'FMG-PE-PID-006': '38-P-XB-00004_01',
+    'FMG-PE-PID-007': '38-P-XB-00005_01',
+    'FMG-PE-PID-008': '38-P-XB-00006_01',
+    'FMG-PE-PID-009': '38-P-XB-00007_01',
+    'FMG-PE-PID-010': '38-P-XB-00008_01',
+    'FMG-PE-PID-011': '38-P-XB-00010_01',
+    'FMG-PE-PID-012': '38-P-XB-00011_01'
+});
+
+const CONNECTOR_LABEL_GAP_PX = 8.8;
 let activeTagPattern = LINE_TAG_PATTERN;
 
 // Track current mode so we can apply mode-specific highlight styling.
@@ -391,6 +408,7 @@ async function processPage(pdf, pageNumber) {
         while ((match = activeTagPattern.exec(text)) !== null) {
             matchesCount++;
             const matchText = match[0];
+            const connectorReplacement = (currentSearchMode === 'connectors') ? (CONNECTOR_REPLACEMENTS[matchText] || null) : null;
 
             const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
             const angleRad = Math.atan2(tx[1], tx[0]);
@@ -415,6 +433,21 @@ async function processPage(pdf, pageNumber) {
             highlight.style.width = `${matchWidth}px`;
             highlight.style.height = `${fontHeight}px`;
             highlight.style.transform = `rotate(${angleDeg}deg) translateY(-100%)`;
+
+            // Connector replacement label (rendered below the blue box)
+            if (currentSearchMode === 'connectors') {
+                if (connectorReplacement) {
+                    const label = document.createElement('div');
+                    label.className = 'connector-replacement-label';
+                    label.textContent = connectorReplacement;
+                    label.style.left = `${x}px`;
+                    // The highlight box bottom edge aligns to y after translateY(-100%).
+                    // Place the label just below that with a small gap for readability.
+                    label.style.top = `${y + CONNECTOR_LABEL_GAP_PX}px`;
+                    label.style.transform = `rotate(${angleDeg}deg)`;
+                    pageDiv.appendChild(label);
+                }
+            }
 
             // Add click to copy functionality for highlight boxes
             highlight.addEventListener('click', (e) => {
@@ -452,7 +485,7 @@ async function processPage(pdf, pageNumber) {
             };
 
             pageDiv.appendChild(highlight);
-            addSidebarItem(matchText, pageNumber, sheetTitle, highlight, pdfRect);
+            addSidebarItem(matchText, pageNumber, sheetTitle, highlight, pdfRect, currentSearchMode, connectorReplacement);
         }
     }
     
@@ -528,7 +561,7 @@ function updateFooterList(pageNum) {
     });
 }
 
-function addSidebarItem(text, pageNum, title, highlightElement, pdfRect) {
+function addSidebarItem(text, pageNum, title, highlightElement, pdfRect, mode = 'line', replacementText = null) {
     const id = allFoundTags.length;
 
     allFoundTags.push({ 
@@ -538,7 +571,9 @@ function addSidebarItem(text, pageNum, title, highlightElement, pdfRect) {
         title: title,
         status: 'Pending',
         element: highlightElement,
-        pdfRect: pdfRect
+        pdfRect: pdfRect,
+        mode: mode,
+        replacementText: replacementText
     });
 
     // Sidebar rendering is centralized to support duplicate grouping.
