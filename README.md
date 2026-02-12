@@ -27,6 +27,11 @@ Search modes (choose in the sidebar):
 - **Both**
   - Combines the above patterns.
 
+- **Connectors**
+  - Label (current): `FMG-PE-PID-Digits`
+  - Pattern (current): `FMG-PE-PID-\\d{6}`
+  - Example: `FMG-PE-PID-123456`
+
 Each match becomes a clickable highlight on the page and an entry in the sidebar.
 
 ### Drawing number / title extraction
@@ -78,7 +83,7 @@ Then open:
 
 ## How to use
 
-1. Choose **Search Mode** (Line / Valve / Both).
+1. Choose **Search Mode** (Line / Valve / Both / Connectors).
 2. Choose **Duplicates**:
   - **Count all**: every match is listed/counts separately (useful when you want to review every occurrence)
   - **Combine**: repeated tags across pages are grouped into one row in the sidebar and CSV

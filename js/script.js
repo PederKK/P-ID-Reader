@@ -19,7 +19,14 @@ const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 // 35-1.1/2"-A2R-9008
 // 35-3/4"-B2R-9055
 const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
+
+// Connector label pattern (minimal initial implementation)
+// Matches labels like: FMG-PE-PID-123456
+const CONNECTOR_LABEL_PATTERN = /\bFMG-PE-PID-\d{6}\b/g;
 let activeTagPattern = LINE_TAG_PATTERN;
+
+// Track current mode so we can apply mode-specific highlight styling.
+let currentSearchMode = 'line';
 
 const RENDER_SCALE = 2.0; 
 let allFoundTags = []; 
@@ -225,7 +232,10 @@ async function runSearch() {
 async function runAudit(file) {
     // Determine Search Mode (read current radio selection each run)
     const searchMode = document.querySelector('input[name="searchMode"]:checked')?.value || 'line';
-    if (searchMode === 'valve') {
+    currentSearchMode = searchMode;
+    if (searchMode === 'connectors') {
+        activeTagPattern = CONNECTOR_LABEL_PATTERN;
+    } else if (searchMode === 'valve') {
         // Valve-only: check original first, then alternate
         activeTagPattern = new RegExp(VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source, "g");
     } else if (searchMode === 'both') {
@@ -396,6 +406,7 @@ async function processPage(pdf, pageNumber) {
 
             const highlight = document.createElement('div');
             highlight.className = 'highlight-box';
+            if (currentSearchMode === 'connectors') highlight.classList.add('connector');
             highlight.title = matchText;
             highlight.id = `hl-${allFoundTags.length}`;
 
