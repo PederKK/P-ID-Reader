@@ -448,6 +448,29 @@ h1 {
     color: #666;
 }
 
+.result-main .substitution {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: #666;
+    width: fit-content;
+}
+
+.result-main .substitution-label {
+    color: inherit;
+    opacity: 0.9;
+}
+
+.result-main mark.substitution-value {
+    background: var(--highlight-color);
+    border: 1px solid var(--highlight-border);
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    color: #333;
+}
+
 #sidebar .result-main .tag {
     color: var(--sidebar-text);
 }
@@ -459,6 +482,14 @@ h1 {
 
 #sidebar .result-main .meta {
     color: rgba(120, 190, 255, 0.92);
+}
+
+#sidebar .result-main .substitution {
+    color: rgba(120, 190, 255, 0.92);
+}
+
+#sidebar .result-main mark.substitution-value {
+    color: var(--sidebar-text);
 }
 
 .result-actions {

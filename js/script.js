@@ -26,49 +26,53 @@ const CONNECTOR_LABEL_PATTERN = /\bFMG-PE-PID-\d{3}\b/g;
 
 // Connector replacement table (initial set)
 const CONNECTOR_REPLACEMENTS = Object.freeze({
-    'FMG-PE-PID-001': '2422-NOV1-00-P-XB-00001',
-    'FMG-PE-PID-003': '2422-NOV1-38-P-XB-00001',
-    'FMG-PE-PID-004': '2422-NOV1-38-P-XB-00002',
-    'FMG-PE-PID-005': '2422-NOV1-38-P-XB-00003',
-    'FMG-PE-PID-006': '2422-NOV1-38-P-XB-00004',
-    'FMG-PE-PID-007': '2422-NOV1-38-P-XB-00005',
-    'FMG-PE-PID-008': '2422-NOV1-38-P-XB-00006',
-    'FMG-PE-PID-009': '2422-NOV1-38-P-XB-00007',
-    'FMG-PE-PID-010': '2422-NOV1-38-P-XB-00008',
-    'FMG-PE-PID-011': '2422-NOV1-38-P-XB-00010',
-    'FMG-PE-PID-012': '2422-NOV1-38-P-XB-00011',
-    'FMG-PE-PID-019': '2422-NOV1-38-P-XB-00022',
-    'FMG-PE-PID-020': '2422-NOV1-38-P-XB-00023',
-    'FMG-PE-PID-021': '2422-NOV1-38-P-XB-00024',
-    'FMG-PE-PID-023': '2422-NOV1-38-P-XB-00019',
-    'FMG-PE-PID-024': '2422-NOV1-38-P-XB-00020',
-    'FMG-PE-PID-025': '2422-NOV1-38-P-XB-00021',
-    'FMG-PE-PID-026': '2422-NOV1-46-P-XB-00001',
-    'FMG-PE-PID-027': '2422-NOV1-46-P-XB-00002',
-    'FMG-PE-PID-028': '2422-NOV1-46-P-XB-00003',
-    'FMG-PE-PID-029': '2422-NOV1-46-P-XB-00004',
-    'FMG-PE-PID-030': '2422-NOV1-44-P-XB-00004',
-    'FMG-PE-PID-032': '2422-NOV1-42-P-XB-00007',
-    'FMG-PE-PID-033': '2422-NOV1-42-P-XB-00001',
-    'FMG-PE-PID-034': '2422-NOV1-42-P-XB-00002',
-    'FMG-PE-PID-035': '2422-NOV1-42-P-XB-00003',
-    'FMG-PE-PID-036': '2422-NOV1-38-P-XB-00029',
-    'FMG-PE-PID-037': '2422-NOV1-38-P-XB-00030',
-    'FMG-PE-PID-038': '2422-NOV1-44-P-XB-00001',
-    'FMG-PE-PID-039': '2422-NOV1-44-P-XB-00002',
-    'FMG-PE-PID-040': '2422-NOV1-44-P-XB-00003',
-    'FMG-PE-PID-041': '2422-NOV1-38-P-XB-00009',
-    'FMG-PE-PID-043': '2422-NOV1-38-P-XB-00027',
-    'FMG-PE-PID-044': '2422-NOV1-56-P-XB-00001',
-    'FMG-PE-PID-045': '2422-NOV1-43-P-XB-00001',
-    'FMG-PE-PID-046': '2422-NOV1-45-P-XB-00001',
-    'FMG-PE-PID-047': '2422-NOV1-63-P-XB-00001',
-    'FMG-PE-PID-048': '2422-NOV1-64-P-XB-00001',
-    'FMG-PE-PID-049': '2422-NOV1-53-P-XB-00001',
-    'FMG-PE-PID-050': '2422-NOV1-55-P-XB-00001',
-    'FMG-PE-PID-051': '2422-NOV1-40-P-XB-00001',
-    'FMG-PE-PID-052': '2422-NOV1-38-P-XB-00028',
-    '2422-NOV-'        : ''
+    '38PA002A': '21-PA-1002A',
+    '38PA002B': '21-PA-1002B',
+    '38PA002A/B': '21-PA-1002A/B'
+    
+    //'FMG-PE-PID-001': '2422-NOV1-00-P-XB-00001',
+    //'FMG-PE-PID-003': '2422-NOV1-38-P-XB-00001',
+    //'FMG-PE-PID-004': '2422-NOV1-38-P-XB-00002',
+    //'FMG-PE-PID-005': '2422-NOV1-38-P-XB-00003',
+    //'FMG-PE-PID-006': '2422-NOV1-38-P-XB-00004',
+    //'FMG-PE-PID-007': '2422-NOV1-38-P-XB-00005',
+    //'FMG-PE-PID-008': '2422-NOV1-38-P-XB-00006',
+    //'FMG-PE-PID-009': '2422-NOV1-38-P-XB-00007',
+    //'FMG-PE-PID-010': '2422-NOV1-38-P-XB-00008',
+    //'FMG-PE-PID-011': '2422-NOV1-38-P-XB-00010',
+    //'FMG-PE-PID-012': '2422-NOV1-38-P-XB-00011',
+    //'FMG-PE-PID-019': '2422-NOV1-38-P-XB-00022',
+    //'FMG-PE-PID-020': '2422-NOV1-38-P-XB-00023',
+    //'FMG-PE-PID-021': '2422-NOV1-38-P-XB-00024',
+    //'FMG-PE-PID-023': '2422-NOV1-38-P-XB-00019',
+    //'FMG-PE-PID-024': '2422-NOV1-38-P-XB-00020',
+    //'FMG-PE-PID-025': '2422-NOV1-38-P-XB-00021',
+    //'FMG-PE-PID-026': '2422-NOV1-46-P-XB-00001',
+    //'FMG-PE-PID-027': '2422-NOV1-46-P-XB-00002',
+    //'FMG-PE-PID-028': '2422-NOV1-46-P-XB-00003',
+    //'FMG-PE-PID-029': '2422-NOV1-46-P-XB-00004',
+    //'FMG-PE-PID-030': '2422-NOV1-44-P-XB-00004',
+    //'FMG-PE-PID-032': '2422-NOV1-42-P-XB-00007',
+    //'FMG-PE-PID-033': '2422-NOV1-42-P-XB-00001',
+    //'FMG-PE-PID-034': '2422-NOV1-42-P-XB-00002',
+    //'FMG-PE-PID-035': '2422-NOV1-42-P-XB-00003',
+    //'FMG-PE-PID-036': '2422-NOV1-38-P-XB-00029',
+    //'FMG-PE-PID-037': '2422-NOV1-38-P-XB-00030',
+    //'FMG-PE-PID-038': '2422-NOV1-44-P-XB-00001',
+    //'FMG-PE-PID-039': '2422-NOV1-44-P-XB-00002',
+    //'FMG-PE-PID-040': '2422-NOV1-44-P-XB-00003',
+    //'FMG-PE-PID-041': '2422-NOV1-38-P-XB-00009',
+    //'FMG-PE-PID-043': '2422-NOV1-38-P-XB-00027',
+    //'FMG-PE-PID-044': '2422-NOV1-56-P-XB-00001',
+    //'FMG-PE-PID-045': '2422-NOV1-43-P-XB-00001',
+    //'FMG-PE-PID-046': '2422-NOV1-45-P-XB-00001',
+    //'FMG-PE-PID-047': '2422-NOV1-63-P-XB-00001',
+    //'FMG-PE-PID-048': '2422-NOV1-64-P-XB-00001',
+    //'FMG-PE-PID-049': '2422-NOV1-53-P-XB-00001',
+    //'FMG-PE-PID-050': '2422-NOV1-55-P-XB-00001',
+    //'FMG-PE-PID-051': '2422-NOV1-40-P-XB-00001',
+    //'FMG-PE-PID-052': '2422-NOV1-38-P-XB-00028',
+    //'2422-NOV-'        : ''
 });
 
 const CONNECTOR_LABEL_GAP_PX = 8.8;
@@ -645,13 +649,20 @@ function createGroupedView(tags) {
                 tag: key,
                 occurrences: [],
                 pages: new Set(),
-                titles: new Set()
+                titles: new Set(),
+                mode: t.mode,
+                replacementText: null
             };
             map.set(key, g);
         }
         g.occurrences.push(t);
         g.pages.add(t.page);
         if (t.title) g.titles.add(t.title);
+
+        // Capture a representative substitution (connectors mode only).
+        if (!g.replacementText && t.replacementText) {
+            g.replacementText = t.replacementText;
+        }
     }
 
     const groups = Array.from(map.values());
@@ -679,15 +690,27 @@ function createGroupedView(tags) {
     return groups;
 }
 
+function renderReplacementMarkup(replacementText) {
+    if (!replacementText) return '';
+    return `
+        <div class="substitution" title="Keyword substitution">
+            <span class="substitution-label">Sub:</span>
+            <mark class="substitution-value">${escapeHtml(replacementText)}</mark>
+        </div>
+    `;
+}
+
 function renderSidebarOccurrenceItem(item) {
     const li = document.createElement('li');
     li.className = 'result-item';
 
     const safeTitle = item.title || 'Unknown Title';
+    const replacementMarkup = (item.mode === 'connectors') ? renderReplacementMarkup(item.replacementText) : '';
     li.innerHTML = `
         <div class="result-main">
-            <div class="tag" title="Click to copy">${item.tag}</div>
+            <div class="tag" title="Click to copy">${escapeHtml(item.tag)}</div>
             <div class="meta">Sheet: ${escapeHtml(safeTitle)} · Page: ${item.page}</div>
+            ${replacementMarkup}
         </div>
         <div class="result-actions">
             <button class="btn-mini correct" title="Approve" onclick="setStatus(event, ${item.id}, 'Correct', this)">✓</button>
@@ -733,11 +756,13 @@ function renderSidebarGroupedItem(group) {
     const titles = Array.from(group.titles);
     const titleLabel = titles.length ? titles.join(' | ') : 'Unknown Title';
     const pages = Array.from(group.pages).sort((a, b) => a - b);
+    const replacementMarkup = (group.mode === 'connectors') ? renderReplacementMarkup(group.replacementText) : '';
 
     li.innerHTML = `
         <div class="result-main">
-            <div class="tag" title="Click to copy">${group.tag}</div>
+            <div class="tag" title="Click to copy">${escapeHtml(group.tag)}</div>
             <div class="meta">Sheets: ${escapeHtml(titleLabel)} · Pages: ${pages.join(', ')} · Count: ${group.occurrences.length}</div>
+            ${replacementMarkup}
         </div>
         <div class="result-actions">
             <button class="btn-mini correct" title="Approve all" data-tag="${escapeHtml(group.tag)}">✓</button>
