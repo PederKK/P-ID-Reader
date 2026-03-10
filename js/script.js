@@ -20,9 +20,18 @@ const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 // 35-3/4"-B2R-9055
 const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 
-// Connector label pattern (minimal initial implementation)
-// Matches labels like: FMG-PE-PID-001
-const CONNECTOR_LABEL_PATTERN = /\bFMG-PE-PID-\d{3}\b/g;
+function escapeRegexLiteral(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildKeywordPatternFromMap(mapObj) {
+    const keys = Object.keys(mapObj || {}).filter(k => k);
+    // Prefer longest-first so e.g. 38PA002A/B matches before 38PA002A.
+    keys.sort((a, b) => b.length - a.length);
+    if (keys.length === 0) return /$^/g;
+    const alternation = keys.map(escapeRegexLiteral).join('|');
+    return new RegExp(`\\b(?:${alternation})\\b`, 'g');
+}
 
 // Connector replacement table (initial set)
 const CONNECTOR_REPLACEMENTS = Object.freeze({
@@ -74,6 +83,9 @@ const CONNECTOR_REPLACEMENTS = Object.freeze({
     //'FMG-PE-PID-052': '2422-NOV1-38-P-XB-00028',
     //'2422-NOV-'        : ''
 });
+
+// Connectors mode: match any of the configured keyword keys.
+const CONNECTOR_LABEL_PATTERN = buildKeywordPatternFromMap(CONNECTOR_REPLACEMENTS);
 
 const CONNECTOR_LABEL_GAP_PX = 8.8;
 let activeTagPattern = LINE_TAG_PATTERN;
