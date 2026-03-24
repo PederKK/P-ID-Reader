@@ -54,6 +54,7 @@ const zoomValue = document.getElementById('zoom-value');
 const footerList = document.getElementById('footerList');
 const stickyFooter = document.getElementById('sticky-footer');
 const viewerContainer = document.getElementById('viewer-container');
+const viewerEmptyState = document.getElementById('viewer-empty-state');
 const zoomContainer = document.getElementById('zoom-container'); // New container
 // Optional: some UI variants include a dedicated Search button.
 // This project currently auto-runs on file selection, so the button may not exist.
@@ -236,6 +237,12 @@ function applyZoom() {
     }
 }
 
+function setViewerEmptyState(visible) {
+    if (!viewerEmptyState) return;
+    viewerEmptyState.hidden = !visible;
+    viewerEmptyState.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
 // Scroll listener to update footer based on visible page
 document.getElementById('viewer-container').addEventListener('scroll', debounce(updateFooterForVisiblePage, 200));
 document.getElementById('viewer-container').addEventListener('scroll', () => {
@@ -331,6 +338,7 @@ async function runAudit(file) {
 
     // Reset UI/state so repeated searches don't require a refresh
     pdfWrapper.innerHTML = '';
+    setViewerEmptyState(false);
     resultList.innerHTML = '';
     footerList.innerHTML = '';
     allFoundTags = [];
@@ -393,6 +401,7 @@ async function runAudit(file) {
     } catch (err) {
         console.error(err);
         statusBar.textContent = 'Error: ' + err.message;
+        setViewerEmptyState(true);
     } finally {
         spinner.style.display = 'none';
         fileInput.disabled = false;
