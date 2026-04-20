@@ -21,6 +21,13 @@ const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 let activeTagPattern = LINE_TAG_PATTERN;
 
+// Optional user-supplied line regex (generated via GPT). When set, it replaces LINE_TAG_PATTERN/ALT.
+let userLineTagPattern = null; // RegExp | null
+let userLineTagPatternRaw = '';
+
+const OPENAI_API_URL = 'https://api.openai.com/v1/responses';
+const OPENAI_MODEL = 'gpt-4.1-mini';
+
 const RENDER_SCALE = 2.0; 
 let allFoundTags = []; 
 let currentZoom = 1.0;
@@ -69,6 +76,12 @@ const compareShowPdfAttributesCheckbox = document.getElementById('compare-show-p
 const compareAttributeSelect = document.getElementById('compare-attr-select');
 const exportCompareBtn = document.getElementById('export-compare-btn');
 const compareAttributeOverlay = document.getElementById('compare-attribute-overlay');
+
+// Regex-from-examples UI
+const patternExamplesInput = document.getElementById('patternExamples');
+const openaiKeyInput = document.getElementById('openaiKeyInput');
+const generateRegexBtn = document.getElementById('generateRegexBtn');
+const generatedRegexStatus = document.getElementById('generatedRegexStatus');
 
 // Track current page for footer updates
 let currentPageNumber = 1;
@@ -146,6 +159,156 @@ document.querySelectorAll('input[name="dupMode"]').forEach(radio => {
     });
 });
 restoreRememberedSelections();
+
+if (generateRegexBtn) {
+    generateRegexBtn.addEventListener('click', async () => {
+        const examplesText = (patternExamplesInput?.value || '').trim();
+        if (!examplesText) {
+            setGeneratedRegexStatus('Add at least one example first.');
+            return;
+        }
+
+        const apiKey = (openaiKeyInput?.value || '').trim();
+        if (!apiKey) {
+            setGeneratedRegexStatus('Enter your OpenAI API key.');
+            openaiKeyInput?.focus();
+            return;
+        }
+
+        try {
+            setRegexUiBusy(true);
+            setGeneratedRegexStatus('Generating regex...');
+
+            const patternText = await generateRegexFromExamples(examplesText, apiKey);
+            const compiled = compileRegexFromModelOutput(patternText);
+            userLineTagPattern = compiled;
+            userLineTagPatternRaw = patternText;
+
+            setGeneratedRegexStatus('Regex updated. Re-scanning...');
+            // Auto-apply by re-running audit if a PDF is already selected.
+            const currentFile = fileInput?.files?.[0];
+            if (currentFile) {
+                await runAudit(currentFile);
+                setGeneratedRegexStatus('Regex updated and scan complete.');
+            } else {
+                setGeneratedRegexStatus('Regex updated. Select a PDF to scan.');
+            }
+        } catch (err) {
+            console.error(err);
+            setGeneratedRegexStatus(err?.message ? `Error: ${err.message}` : 'Error generating regex.');
+        } finally {
+            setRegexUiBusy(false);
+        }
+    });
+}
+
+function setRegexUiBusy(busy) {
+    if (generateRegexBtn) generateRegexBtn.disabled = !!busy;
+    if (patternExamplesInput) patternExamplesInput.disabled = !!busy;
+}
+
+function setGeneratedRegexStatus(text) {
+    if (!generatedRegexStatus) return;
+    generatedRegexStatus.textContent = text || '';
+    // Helpful hover tooltip: show the last raw pattern (if any).
+    generatedRegexStatus.title = userLineTagPatternRaw || '';
+}
+
+async function generateRegexFromExamples(examplesText, apiKey) {
+    const prompt =
+`=================
+Based on the following examples, give me the expression pattern (regex) :   ${examplesText}
+
+*The pattern should be only one line and don't explain anything.
+=================`;
+
+    const resp = await fetch(OPENAI_API_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+            model: OPENAI_MODEL,
+            input: prompt,
+            temperature: 0,
+            max_output_tokens: 200
+        })
+    });
+
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) {
+        const msg = data?.error?.message || `OpenAI request failed (${resp.status})`;
+        throw new Error(msg);
+    }
+
+    const text = extractOpenAIOutputText(data);
+    const oneLine = String(text || '').split(/\r?\n/)[0].trim();
+    if (!oneLine) {
+        throw new Error('OpenAI returned an empty response.');
+    }
+    return stripCodeFences(oneLine);
+}
+
+function extractOpenAIOutputText(data) {
+    if (!data) return '';
+    if (typeof data.output_text === 'string') return data.output_text;
+    // Responses API shape: output[] -> content[] -> { type: 'output_text', text }
+    const output = Array.isArray(data.output) ? data.output : [];
+    for (const item of output) {
+        const content = Array.isArray(item?.content) ? item.content : [];
+        for (const c of content) {
+            if (c?.type === 'output_text' && typeof c?.text === 'string') {
+                return c.text;
+            }
+            if (typeof c?.text === 'string') {
+                return c.text;
+            }
+        }
+    }
+    // Fallback for other shapes
+    return data?.text || '';
+}
+
+function stripCodeFences(s) {
+    let out = String(s || '').trim();
+    out = out.replace(/^```(?:regex|js|javascript)?\s*/i, '');
+    out = out.replace(/\s*```$/i, '');
+    return out.trim();
+}
+
+function compileRegexFromModelOutput(modelText) {
+    const raw = stripCodeFences(String(modelText || '').trim());
+    let firstLine = raw.split(/\r?\n/)[0].trim();
+    if (!firstLine) throw new Error('No regex was returned.');
+
+    // Strip simple surrounding quotes/backticks if present.
+    if ((firstLine.startsWith('`') && firstLine.endsWith('`')) ||
+        (firstLine.startsWith('"') && firstLine.endsWith('"')) ||
+        (firstLine.startsWith("'") && firstLine.endsWith("'"))) {
+        firstLine = firstLine.slice(1, -1).trim();
+    }
+
+    // Allow either: \b...\b  OR  /\b...\b/g
+    const asLiteral = firstLine.match(/^\/(.*)\/([gimsuyd]*)$/);
+    let source = firstLine;
+    let flags = 'g';
+
+    if (asLiteral) {
+        source = asLiteral[1];
+        flags = asLiteral[2] || '';
+        if (!flags.includes('g')) flags += 'g';
+    }
+
+    // Ensure global flag for exec() loops.
+    if (!flags.includes('g')) flags += 'g';
+
+    try {
+        return new RegExp(source, flags);
+    } catch (e) {
+        throw new Error(`Invalid regex returned: ${e?.message || 'failed to compile'}`);
+    }
+}
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -323,17 +486,21 @@ async function runAudit(file) {
         activeTagPattern = new RegExp(VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source, "g");
     } else if (searchMode === 'both') {
         // Combine patterns:
-        // 1) Original line pattern (canonical reference)
-        // 2) Alternate line pattern (fractions/decimals)
-        // 3) Original valve pattern (canonical reference)
-        // 4) Alternate valve pattern (fractions/decimals)
+        // - Line: prefer userLineTagPattern if present, else built-in line patterns
+        // - Valve: built-in valve patterns
+        const lineSource = userLineTagPattern ? userLineTagPattern.source : (LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source);
+        const flags = userLineTagPattern ? userLineTagPattern.flags : 'g';
         activeTagPattern = new RegExp(
-            LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source + "|" + VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source,
-            "g"
+            lineSource + "|" + VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source,
+            flags
         );
     } else {
-        // Line-only: check original first, then alternate
-        activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source, "g");
+        // Line-only: use userLineTagPattern if present, else built-in line patterns
+        if (userLineTagPattern) {
+            activeTagPattern = new RegExp(userLineTagPattern.source, userLineTagPattern.flags);
+        } else {
+            activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source, "g");
+        }
     }
 
     // Reset UI/state so repeated searches don't require a refresh

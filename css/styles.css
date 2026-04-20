@@ -255,6 +255,41 @@ h1 {
 .info-item strong { display: block; color: var(--sidebar-text); margin-bottom: 2px; font-weight: 600; }
 .info-item p { margin: 0; color: var(--sidebar-muted); }
 
+.regex-textarea,
+.regex-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    background: rgba(255, 255, 255, 0.75);
+    color: var(--sidebar-text);
+    font-size: 0.85rem;
+}
+
+.regex-textarea {
+    resize: vertical;
+    min-height: 74px;
+}
+
+.regex-row {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.regex-status {
+    font-size: 0.78rem;
+    color: var(--sidebar-muted);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* Search Section Card (legacy) */
 .card {
     background: var(--sidebar-card);

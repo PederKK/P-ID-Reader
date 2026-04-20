@@ -33,6 +33,15 @@
                     </div>
                     <div id="info-box" class="logic-box">
                         <div class="info-item">
+                            <strong>Regex from examples</strong>
+                            <textarea id="patternExamples" class="regex-textarea" rows="3" placeholder="Paste example tags, one per line"></textarea>
+                            <input id="openaiKeyInput" class="regex-input" type="password" autocomplete="off" placeholder="OpenAI API key (sk-...)" />
+                            <div class="regex-row">
+                                <button id="generateRegexBtn" class="btn-toggle" type="button">Generate regex</button>
+                                <span id="generatedRegexStatus" class="regex-status" aria-live="polite"></span>
+                            </div>
+                        </div>
+                        <div class="info-item">
                             <strong>Tag pattern</strong>
                             <p>Digits – Digits – Letters – Alphanum – Digits – Letters</p>
                         </div>
