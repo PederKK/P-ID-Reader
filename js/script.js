@@ -2,8 +2,9 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 // Line tag patterns (original first as the canonical reference)
-// Original example: 10-2"-HC-1234-01-A
-const LINE_TAG_PATTERN = /\b\d+-\d+"-[A-Z]+-[A-Z0-9]+-(?:\d{4}|XXXX)-[A-Z]+\b/g;
+// Original example (variant): 4"-RM-38-8003-BS20-NI
+// Supports sizes like: 4", 10", 3/4", 1.1/2"
+const LINE_TAG_PATTERN = /\b\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z]+-\d+-\d{4}-[A-Z0-9]+-[A-Z]+\b/g;
 
 // Alternate line size formats to support fractions/decimals like:
 // 35-1.1/2"-RM-A06A1-5532-ET
