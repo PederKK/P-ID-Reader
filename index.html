@@ -33,12 +33,16 @@
                     </div>
                     <div id="info-box" class="logic-box">
                         <div class="info-item">
-                            <strong>Tag pattern</strong>
-                            <p>Digits – Digits – Letters – Alphanum – Digits – Letters</p>
+                            <strong>Line tags pattern</strong>
+                            <p id="line-pattern-help">Loading...</p>
                         </div>
                         <div class="info-item">
-                            <strong>Title label</strong>
-                            <p>TP-OTC DRAWING NUMBER</p>
+                            <strong>Valve tags pattern</strong>
+                            <p id="valve-pattern-help">Loading...</p>
+                        </div>
+                        <div class="info-item">
+                            <strong>Actuated valves pattern</strong>
+                            <p id="actuated-pattern-help">Loading...</p>
                         </div>
                     </div>
                 </section>
@@ -51,9 +55,9 @@
                     <div class="form-block">
                         <div class="field-label">Mode</div>
                         <div class="radio-group">
-                            <label class="radio-label"><input type="radio" name="searchMode" value="line" checked> Line tags</label>
-                            <label class="radio-label"><input type="radio" name="searchMode" value="valve"> Valve tags</label>
-                            <label class="radio-label"><input type="radio" name="searchMode" value="both"> Both</label>
+                            <label class="radio-label"><input type="checkbox" name="searchMode" value="line" checked> Line tags</label>
+                            <label class="radio-label"><input type="checkbox" name="searchMode" value="valve"> Valve tags</label>
+                            <label class="radio-label"><input type="checkbox" name="searchMode" value="actuated"> Actuated valves</label>
                         </div>
                     </div>
 
@@ -76,22 +80,36 @@
                     </div>
 
                     <div class="form-block">
-                        <div class="field-label">Line List (Excel/CSV) from Aveva Engineering</div>
-                        <div class="file-input-wrapper">
-                            <label for="lineListInput" class="file-label">
-                                <span id="lineListFileName">No line list selected</span>
-                            </label>
-                            <input type="file" id="lineListInput" accept=".xlsx,.xls,.csv" onchange="updateLineListFileName(this)">
-                        </div>
+                        <button id="search-btn" class="btn btn-primary btn-search-run" onclick="runSearch()">
+                            Search and Find!
+                        </button>
                     </div>
 
                     <div class="form-block">
-                        <button id="open-compare-btn" class="btn btn-compare" onclick="openLineListCompareModal()">
-                            Open Line List Compare
-                        </button>
-                        <button id="export-line-list-btn" class="btn btn-secondary line-list-action-btn" onclick="exportLineListCompareToXlsx()">
-                            Export Line List XLSX
-                        </button>
+                        <div class="section-header line-list-header">
+                            <div class="field-label">Line List from Aveva Engineering</div>
+                            <button id="toggle-line-list-btn" class="btn-toggle" onclick="toggleLineListTools()" aria-controls="line-list-tools" aria-expanded="false">Show</button>
+                        </div>
+                    </div>
+
+                    <div id="line-list-tools" class="line-list-tools collapsed">
+                        <div class="form-block">
+                            <div class="file-input-wrapper">
+                                <label for="lineListInput" class="file-label">
+                                    <span id="lineListFileName">No line list selected</span>
+                                </label>
+                                <input type="file" id="lineListInput" accept=".xlsx,.xls,.csv" onchange="updateLineListFileName(this)">
+                            </div>
+                        </div>
+
+                        <div class="form-block">
+                            <button id="open-compare-btn" class="btn btn-compare" onclick="openLineListCompareModal()">
+                                Open Line List Compare
+                            </button>
+                            <button id="export-line-list-btn" class="btn btn-secondary line-list-action-btn" onclick="exportLineListCompareToXlsx()">
+                                Export Line List XLSX
+                            </button>
+                        </div>
                     </div>
                 </section>
 

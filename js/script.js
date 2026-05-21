@@ -19,7 +19,15 @@ const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 // 35-1.1/2"-A2R-9008
 // 35-3/4"-B2R-9055
 const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
+
+// Actuated valve tags
+// Examples: 35PSV 9627A, 35TV 9069, 35PCV 9061
+// Rule: 2 digits + 2/3 letters ending in V + space + 4 digits + optional suffix letter
+const ACTUATED_VALVE_TAG_PATTERN = /\b\d{2}[A-Z]{1,2}V\s+\d{4}[A-Z]?\b/g;
+const ACTUATED_PREFIX_PATTERN = /^\d{2}[A-Z]{1,2}V$/;
+const ACTUATED_SUFFIX_PATTERN = /^\d{4}[A-Z]?$/;
 let activeTagPattern = LINE_TAG_PATTERN;
+let currentSearchModes = new Set(['line']);
 
 const RENDER_SCALE = 2.0; 
 let allFoundTags = []; 
@@ -56,8 +64,7 @@ const stickyFooter = document.getElementById('sticky-footer');
 const viewerContainer = document.getElementById('viewer-container');
 const viewerEmptyState = document.getElementById('viewer-empty-state');
 const zoomContainer = document.getElementById('zoom-container'); // New container
-// Optional: some UI variants include a dedicated Search button.
-// This project currently auto-runs on file selection, so the button may not exist.
+// Search is triggered by the sidebar button after selecting options.
 const searchBtn = document.getElementById('search-btn');
 const lineListFileName = document.getElementById('lineListFileName');
 const compareDrawer = document.getElementById('compare-drawer');
@@ -105,9 +112,11 @@ let isPanning = false;
 let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
-document.querySelectorAll('input[name="searchMode"]').forEach(radio => {
-    radio.addEventListener('change', () => {
-        rememberPreference(UI_PREF_KEYS.searchMode, radio.value);
+document.querySelectorAll('input[name="searchMode"]').forEach(input => {
+    input.addEventListener('change', () => {
+        const selectedModes = Array.from(document.querySelectorAll('input[name="searchMode"]:checked'))
+            .map(el => el.value);
+        rememberPreference(UI_PREF_KEYS.searchMode, JSON.stringify(selectedModes));
     });
 });
 if (compareShowAttributesCheckbox) {
@@ -146,6 +155,7 @@ document.querySelectorAll('input[name="dupMode"]').forEach(radio => {
     });
 });
 restoreRememberedSelections();
+renderSearchHelpPatterns();
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -270,6 +280,64 @@ function toggleInfoBox() {
     btn.textContent = infoBox.classList.contains('collapsed') ? 'Show Info' : 'Hide Info';
 }
 
+function regexToTextDescription(regexInput) {
+    let pattern = regexInput instanceof RegExp ? regexInput.source : String(regexInput || '');
+
+    // Remove word boundaries from display.
+    pattern = pattern.replace(/\\b/g, '');
+
+    const replacements = [
+        { regex: /\(\?:\\d\{4\}\|XXXX\)/g, text: '(4digits|XXXX)' },
+        { regex: /\[A-Z\]\{1,2\}V/g, text: '1to2letters_endingV' },
+        { regex: /\\d\{(\d+)\}/g, text: (_, count) => `${count}digits` },
+        { regex: /\[A-Z0-9\]\+/g, text: 'alphanumeric' },
+        { regex: /\[A-Z\]\+/g, text: 'letters' },
+        { regex: /\[A-Z\]\?/g, text: 'optional_letter' },
+        { regex: /\\d\+/g, text: 'digits' },
+        { regex: /\(\?:\\\.\\d\+\)\?/g, text: '(.digits optional)' },
+        { regex: /\(\?:\\\/\\d\+\)\?/g, text: '(/digits optional)' },
+        { regex: /\(\?:-digits"\)\?/g, text: '(-digits" optional)' },
+        { regex: /\\s\+/g, text: 'space' },
+        { regex: /\\"/g, text: '"' }
+    ];
+
+    for (const item of replacements) {
+        pattern = pattern.replace(item.regex, item.text);
+    }
+
+    // Final readability cleanup for leftover escapes and repeated spaces.
+    pattern = pattern
+        .replace(/\\\//g, '/')
+        .replace(/\\\./g, '.')
+        .replace(/\\/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+    return pattern;
+}
+
+function renderSearchHelpPatterns() {
+    const linePatternEl = document.getElementById('line-pattern-help');
+    const valvePatternEl = document.getElementById('valve-pattern-help');
+    const actuatedPatternEl = document.getElementById('actuated-pattern-help');
+    if (!linePatternEl || !valvePatternEl || !actuatedPatternEl) return;
+
+    linePatternEl.textContent = `${regexToTextDescription(LINE_TAG_PATTERN)} OR ${regexToTextDescription(LINE_TAG_PATTERN_ALT)}`;
+    valvePatternEl.textContent = `${regexToTextDescription(VALVE_TAG_PATTERN)} OR ${regexToTextDescription(VALVE_TAG_PATTERN_ALT)}`;
+    actuatedPatternEl.textContent = regexToTextDescription(ACTUATED_VALVE_TAG_PATTERN);
+}
+
+function toggleLineListTools() {
+    const tools = document.getElementById('line-list-tools');
+    const btn = document.getElementById('toggle-line-list-btn');
+    if (!tools || !btn) return;
+
+    tools.classList.toggle('collapsed');
+    const isCollapsed = tools.classList.contains('collapsed');
+    btn.textContent = isCollapsed ? 'Show' : 'Hide';
+    btn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+}
+
 function collapseFooter(e) {
     e.stopPropagation(); 
     document.getElementById('sticky-footer').classList.add('collapsed');
@@ -300,9 +368,9 @@ async function handleFileUpload(e) {
     
     // Store PDF name for export feature
     window.currentPDFName = file.name.replace(/\.pdf$/i, '');
-    
-    // Keep current behavior: auto-run when a file is selected
-    await runAudit(file);
+
+    statusBar.textContent = 'PDF ready. Select options, then click Search and Find!';
+    if (completionIcon) completionIcon.style.display = 'none';
 }
 
 // Exposed for the Search button (index.html onclick)
@@ -316,25 +384,28 @@ async function runSearch() {
 }
 
 async function runAudit(file) {
-    // Determine Search Mode (read current radio selection each run)
-    const searchMode = document.querySelector('input[name="searchMode"]:checked')?.value || 'line';
-    if (searchMode === 'valve') {
-        // Valve-only: check original first, then alternate
-        activeTagPattern = new RegExp(VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source, "g");
-    } else if (searchMode === 'both') {
-        // Combine patterns:
-        // 1) Original line pattern (canonical reference)
-        // 2) Alternate line pattern (fractions/decimals)
-        // 3) Original valve pattern (canonical reference)
-        // 4) Alternate valve pattern (fractions/decimals)
-        activeTagPattern = new RegExp(
-            LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source + "|" + VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source,
-            "g"
-        );
-    } else {
-        // Line-only: check original first, then alternate
-        activeTagPattern = new RegExp(LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source, "g");
+    // Determine selected search modes (checkboxes; one or more).
+    const selectedModes = Array.from(document.querySelectorAll('input[name="searchMode"]:checked'))
+        .map(el => el.value);
+    currentSearchModes = new Set(selectedModes);
+
+    const patternSources = [];
+    if (currentSearchModes.has('line')) {
+        patternSources.push(LINE_TAG_PATTERN.source, LINE_TAG_PATTERN_ALT.source);
     }
+    if (currentSearchModes.has('valve')) {
+        patternSources.push(VALVE_TAG_PATTERN.source, VALVE_TAG_PATTERN_ALT.source);
+    }
+    if (currentSearchModes.has('actuated')) {
+        patternSources.push(ACTUATED_VALVE_TAG_PATTERN.source);
+    }
+
+    if (patternSources.length === 0) {
+        // Safe fallback if nothing is selected.
+        patternSources.push(LINE_TAG_PATTERN.source, LINE_TAG_PATTERN_ALT.source);
+    }
+
+    activeTagPattern = new RegExp(patternSources.join('|'), 'g');
 
     // Reset UI/state so repeated searches don't require a refresh
     pdfWrapper.innerHTML = '';
@@ -470,12 +541,15 @@ async function processPage(pdf, pageNumber) {
 
     // --- TAG EXTRACTION LOGIC ---
     let matchesCount = 0;
-    for (const item of textContent.items) {
+    for (let itemIndex = 0; itemIndex < textContent.items.length; itemIndex++) {
+        const item = textContent.items[itemIndex];
         const text = item.str;
         activeTagPattern.lastIndex = 0;
         let match;
+        let foundMatchInItem = false;
 
         while ((match = activeTagPattern.exec(text)) !== null) {
+            foundMatchInItem = true;
             matchesCount++;
             const matchText = match[0];
 
@@ -539,6 +613,59 @@ async function processPage(pdf, pageNumber) {
 
             pageDiv.appendChild(highlight);
             addSidebarItem(matchText, pageNumber, sheetTitle, highlight, pdfRect);
+        }
+
+        // Actuated valve fallback for split text items, e.g. "35PSV" on one line and "9015A" on the next.
+        if (!foundMatchInItem && currentSearchModes.has('actuated') && itemIndex < textContent.items.length - 1) {
+            const prefixToken = String(item.str || '').toUpperCase().replace(/\s+/g, '');
+            const nextItem = textContent.items[itemIndex + 1];
+            const suffixToken = String(nextItem?.str || '').toUpperCase().replace(/\s+/g, '');
+
+            if (ACTUATED_PREFIX_PATTERN.test(prefixToken) && ACTUATED_SUFFIX_PATTERN.test(suffixToken)) {
+                matchesCount++;
+                const matchText = `${prefixToken} ${suffixToken}`;
+
+                const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                const angleRad = Math.atan2(tx[1], tx[0]);
+                const angleDeg = angleRad * (180 / Math.PI);
+
+                const fontHeight = Math.sqrt(tx[2]*tx[2] + tx[3]*tx[3]);
+                const totalItemWidth = item.width * RENDER_SCALE;
+
+                const x = tx[4];
+                const y = tx[5];
+
+                const highlight = document.createElement('div');
+                highlight.className = 'highlight-box';
+                highlight.title = matchText;
+                highlight.id = `hl-${allFoundTags.length}`;
+
+                highlight.style.left = `${x}px`;
+                highlight.style.top = `${y}px`;
+                highlight.style.width = `${totalItemWidth}px`;
+                highlight.style.height = `${fontHeight}px`;
+                highlight.style.transform = `rotate(${angleDeg}deg) translateY(-100%)`;
+
+                highlight.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    copyToClipboard(matchText);
+                });
+
+                const pdfAngleRad = Math.atan2(item.transform[1], item.transform[0]);
+                const pdfAngleDeg = pdfAngleRad * (180 / Math.PI);
+                const pdfHeight = Math.sqrt(item.transform[2]*item.transform[2] + item.transform[3]*item.transform[3]);
+
+                const pdfRect = {
+                    x: item.transform[4],
+                    y: item.transform[5],
+                    width: item.width,
+                    height: pdfHeight,
+                    rotation: pdfAngleDeg
+                };
+
+                pageDiv.appendChild(highlight);
+                addSidebarItem(matchText, pageNumber, sheetTitle, highlight, pdfRect);
+            }
         }
     }
     
@@ -1055,10 +1182,25 @@ function restoreRememberedSelections() {
         lineListFileName.textContent = `${savedLineListName} (last used)`;
     }
 
-    const savedSearchMode = readPreference(UI_PREF_KEYS.searchMode);
-    if (savedSearchMode) {
-        const searchModeRadio = document.querySelector(`input[name="searchMode"][value="${savedSearchMode}"]`);
-        if (searchModeRadio) searchModeRadio.checked = true;
+    const savedSearchModeRaw = readPreference(UI_PREF_KEYS.searchMode);
+    if (savedSearchModeRaw) {
+        let savedModes = [];
+        try {
+            const parsed = JSON.parse(savedSearchModeRaw);
+            if (Array.isArray(parsed)) {
+                savedModes = parsed.filter(mode => ['line', 'valve', 'actuated'].includes(mode));
+            }
+        } catch {
+            if (['line', 'valve', 'actuated'].includes(savedSearchModeRaw)) {
+                savedModes = [savedSearchModeRaw];
+            }
+        }
+
+        if (savedModes.length > 0) {
+            document.querySelectorAll('input[name="searchMode"]').forEach(input => {
+                input.checked = savedModes.includes(input.value);
+            });
+        }
     }
 
     const savedDuplicateMode = readPreference(UI_PREF_KEYS.duplicateMode);

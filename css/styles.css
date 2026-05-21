@@ -250,10 +250,38 @@ h1 {
     margin: 0;
 }
 
+.line-list-header {
+    margin-bottom: 0;
+}
+
+.line-list-header .field-label {
+    margin-bottom: 0;
+}
+
+.line-list-tools {
+    overflow: hidden;
+    max-height: 320px;
+    opacity: 1;
+    transition: max-height 0.3s ease-out, opacity 0.25s ease-out;
+}
+
+.line-list-tools.collapsed {
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
 .info-item { margin-bottom: 8px; }
 .info-item:last-child { margin-bottom: 0; }
 .info-item strong { display: block; color: var(--sidebar-text); margin-bottom: 2px; font-weight: 600; }
 .info-item p { margin: 0; color: var(--sidebar-muted); }
+
+#info-box .info-item p {
+    display: block;
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
 
 /* Search Section Card (legacy) */
 .card {
@@ -331,6 +359,10 @@ h1 {
 .line-list-action-btn {
     width: 100%;
     margin-top: 8px;
+}
+
+.btn-search-run {
+    width: 100%;
 }
 
 /* --- LINE LIST COMPARE DRAWER --- */
