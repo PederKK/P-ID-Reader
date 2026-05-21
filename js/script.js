@@ -1,6 +1,22 @@
 // --- CONFIGURATION ---
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
+// Sheet title patterns (drawing number formats)
+// Examples:
+// - 2422-NOV1-64-P-XB-00001
+// - 2422-NOV1-44-P-XB-00004
+// - 2422-NOV1-38-P-XB-00005
+// Allows slight variations while staying strict enough to avoid random matches.
+const SHEET_TITLE_PATTERN = /\b\d{4}-[A-Z]{2,5}\d?-\d{1,3}-[A-Z]-[A-Z0-9]{1,4}-\d{5}\b/;
+
+function normalizeSheetTitleCandidate(value) {
+    return String(value ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\s+/g, '');
+}
+
 // Line tag patterns (original first as the canonical reference)
 // Original example (variant): 4"-RM-38-8003-BS20-NI
 // Supports sizes like: 4", 10", 3/4", 1.1/2"
@@ -20,6 +36,15 @@ const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 // 35-1.1/2"-A2R-9008
 // 35-3/4"-B2R-9055
 const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
+
+// Compact valve tag patterns (no hyphens)
+// Format: 2 digits + 3 letters + 4 digits
+// Examples:
+// 38BLV8124
+// 38BLV8119
+// 38GBV8101
+// 40BLV8022
+const VALVE_TAG_PATTERN_COMPACT = /\b\d{2}[A-Z]{3}\d{4}\b/g;
 let activeTagPattern = LINE_TAG_PATTERN;
 
 const RENDER_SCALE = 2.0; 
@@ -321,7 +346,10 @@ async function runAudit(file) {
     const searchMode = document.querySelector('input[name="searchMode"]:checked')?.value || 'line';
     if (searchMode === 'valve') {
         // Valve-only: check original first, then alternate
-        activeTagPattern = new RegExp(VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source, "g");
+        activeTagPattern = new RegExp(
+            VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source + "|" + VALVE_TAG_PATTERN_COMPACT.source,
+            "g"
+        );
     } else if (searchMode === 'both') {
         // Combine patterns:
         // 1) Original line pattern (canonical reference)
@@ -329,7 +357,7 @@ async function runAudit(file) {
         // 3) Original valve pattern (canonical reference)
         // 4) Alternate valve pattern (fractions/decimals)
         activeTagPattern = new RegExp(
-            LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source + "|" + VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source,
+            LINE_TAG_PATTERN.source + "|" + LINE_TAG_PATTERN_ALT.source + "|" + VALVE_TAG_PATTERN.source + "|" + VALVE_TAG_PATTERN_ALT.source + "|" + VALVE_TAG_PATTERN_COMPACT.source,
             "g"
         );
     } else {
@@ -445,17 +473,36 @@ async function processPage(pdf, pageNumber) {
         // Check for "TP-OTC DRAWING NUMBER" (spaces removed)
         if (str.includes("TPOTCDRAWINGNUMBER")) {
 
-            // The title value is likely in the *next* few text items
-            // We look ahead up to 10 items to find a string that looks like a drawing number (length > 5)
+            // The title value is likely in the *next* few text items.
+            // Prefer a candidate that matches a known drawing-number pattern, otherwise fall back.
             for (let j = i + 1; j < Math.min(i + 10, textContent.items.length); j++) {
                 const candidate = textContent.items[j].str.trim();
-                // Basic validation: Title should be longer than 5 chars
-                if (candidate.length > 5) {
+
+                const normalized = normalizeSheetTitleCandidate(candidate);
+                const match = normalized.match(SHEET_TITLE_PATTERN);
+                if (match) {
+                    sheetTitle = match[0];
+                    break; // Found pattern match
+                }
+
+                // Basic fallback: Title should be longer than 5 chars
+                if (candidate.length > 5 && sheetTitle === "Unknown Title") {
                     sheetTitle = candidate;
-                    break; // Found it
                 }
             }
             break; // Stop searching for label
+        }
+    }
+
+    // Fallback: If still unknown, check for any direct pattern match anywhere on the page.
+    if (sheetTitle === "Unknown Title") {
+        for (const item of textContent.items) {
+            const normalized = normalizeSheetTitleCandidate(item.str);
+            const match = normalized.match(SHEET_TITLE_PATTERN);
+            if (match) {
+                sheetTitle = match[0];
+                break;
+            }
         }
     }
 
