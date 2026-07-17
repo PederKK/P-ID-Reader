@@ -24,7 +24,7 @@ const VALVE_TAG_PATTERN_ALT = /\b(?:\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d
 // Examples: 35PSV 9627A, 35TV 9069, 35PCV 9061
 // Rule: 2 digits + 2/3 letters ending in V + space + 4 digits + optional suffix letter
 const ACTUATED_VALVE_TAG_PATTERN = /\b\d{2}[A-Z]{1,2}V\s+\d{4}[A-Z]?\b/g;
-const DRAWING_NUMBER_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+){3,}$/i;
+const DRAWING_NUMBER_PATTERN = /^(?=.*\d)[A-Z0-9]+(?:-[A-Z0-9]+){3,}$/i;
 const ACTUATED_PREFIX_PATTERN = /^\d{2}[A-Z]{1,2}V$/;
 const ACTUATED_SUFFIX_PATTERN = /^\d{4}[A-Z]?$/;
 let activeTagPattern = LINE_TAG_PATTERN;
@@ -509,36 +509,30 @@ async function processPage(pdf, pageNumber) {
     // --- TITLE EXTRACTION LOGIC (UPDATED) ---
     let sheetTitle = "Unknown Title";
 
-    const findDrawingNumberNearLabel = (labelNoSpaces) => {
-        for (let i = 0; i < textContent.items.length; i++) {
-            const str = String(textContent.items[i].str || '').toUpperCase().replace(/\s/g, '');
-            if (!str.includes(labelNoSpaces)) continue;
+    // Scan whole page for drawing-number-like text, e.g. 18852-NOV-38-P-XB-9002.
+    let bestDrawingNumber = '';
+    for (const item of textContent.items) {
+        const candidate = String(item?.str || '')
+            .toUpperCase()
+            .replace(/[\u2013\u2014]/g, '-')
+            .replace(/\s+/g, '')
+            .replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '')
+            .replace(/-+/g, '-');
 
-            // Look only at the next 5 text items after the label.
-            for (let j = i + 1; j < Math.min(i + 6, textContent.items.length); j++) {
-                const candidate = String(textContent.items[j].str || '').trim();
-                if (!candidate) continue;
-                if (DRAWING_NUMBER_PATTERN.test(candidate)) {
-                    return candidate;
-                }
-            }
+        if (!DRAWING_NUMBER_PATTERN.test(candidate)) continue;
+
+        // Prefer more segmented/longer matches when several candidates exist on a page.
+        if (
+            !bestDrawingNumber ||
+            candidate.split('-').length > bestDrawingNumber.split('-').length ||
+            (candidate.split('-').length === bestDrawingNumber.split('-').length && candidate.length > bestDrawingNumber.length)
+        ) {
+            bestDrawingNumber = candidate;
         }
-        return '';
-    };
+    }
 
-    // Priority: CONTRACTOR DRAWING NUMBER first, then COMPANY DRAWING NUMBER.
-    sheetTitle = findDrawingNumberNearLabel('CONTRACTORDRAWINGNUMBER')
-        || findDrawingNumberNearLabel('COMPANYDRAWINGNUMBER')
-        || sheetTitle;
-
-    // Fallback: If still unknown, check if any item starts with "SC26-3-NOV" directly
-    if (sheetTitle === "Unknown Title") {
-        for (const item of textContent.items) {
-            if (item.str.trim().startsWith("SC26-3-NOV")) {
-                sheetTitle = item.str.trim();
-                break;
-            }
-        }
+    if (bestDrawingNumber) {
+        sheetTitle = bestDrawingNumber;
     }
 
     // --- TAG EXTRACTION LOGIC ---
