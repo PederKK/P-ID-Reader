@@ -3,13 +3,13 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 
 // Line tag patterns (original first as the canonical reference)
 // Original example: 10-2"-HC-1234-01-A
-const LINE_TAG_PATTERN = /\b\d+-\d+"-[A-Z]+-[A-Z0-9]+-(?:\d{4}|XXXX)-[A-Z]+\b/g;
+const LINE_TAG_PATTERN = /\b(?:\d+-)?\d+"-[A-Za-z]+-[A-Z0-9]+-[A-Z0-9]{2,6}-[A-Z]+\b/g;
 
 // Alternate line size formats to support fractions/decimals like:
 // 35-1.1/2"-RM-A06A1-5532-ET
 // 35-3/4"-CI-A04A1-9506-N
 // Size token here allows: 2", 3/4", 1.1/2" (digits + optional .digits + optional /digits)
-const LINE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z]+-[A-Z0-9]+-(?:\d{4}|XXXX)-[A-Z]+\b/g;
+const LINE_TAG_PATTERN_ALT = /\b(?:\d+-)?\d+(?:\.\d+)?(?:\/\d+)?"-[A-Za-z]+-[A-Z0-9]+-[A-Z0-9]{2,6}-[A-Z]+\b/g;
 
 // Valve tag patterns (original first as the canonical reference)
 // Original example: 35-2"-A2R-9008 OR 35-A2R-9008
@@ -18,12 +18,13 @@ const VALVE_TAG_PATTERN = /\b\d+(?:-\d+")?-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
 // Alternate valve size formats to support fractions/decimals like:
 // 35-1.1/2"-A2R-9008
 // 35-3/4"-B2R-9055
-const VALVE_TAG_PATTERN_ALT = /\b\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)\b/g;
+const VALVE_TAG_PATTERN_ALT = /\b(?:\d+-\d+(?:\.\d+)?(?:\/\d+)?"-[A-Z0-9]+-(?:\d{4}|XXXX)|\d{2}[Vv]\d{5})\b/g;
 
 // Actuated valve tags
 // Examples: 35PSV 9627A, 35TV 9069, 35PCV 9061
 // Rule: 2 digits + 2/3 letters ending in V + space + 4 digits + optional suffix letter
 const ACTUATED_VALVE_TAG_PATTERN = /\b\d{2}[A-Z]{1,2}V\s+\d{4}[A-Z]?\b/g;
+const DRAWING_NUMBER_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+){3,}$/i;
 const ACTUATED_PREFIX_PATTERN = /^\d{2}[A-Z]{1,2}V$/;
 const ACTUATED_SUFFIX_PATTERN = /^\d{4}[A-Z]?$/;
 let activeTagPattern = LINE_TAG_PATTERN;
@@ -512,18 +513,30 @@ async function processPage(pdf, pageNumber) {
     for (let i = 0; i < textContent.items.length; i++) {
         const str = textContent.items[i].str.toUpperCase().replace(/\s/g, ''); // Remove spaces for checking
 
-        // Check for "TP-OTC DRAWING NUMBER" (spaces removed)
-        if (str.includes("TPOTCDRAWINGNUMBER")) {
+        // Check for drawing number labels (spaces removed)
+        if (str.includes("COMPANYDRAWINGNUMBER") || str.includes("CONTRACTORDRAWINGNUMBER")) {
 
             // The title value is likely in the *next* few text items
-            // We look ahead up to 10 items to find a string that looks like a drawing number (length > 5)
+            // We look ahead up to 10 items and prefer a drawing-number-like token.
+            let bestFallbackCandidate = '';
             for (let j = i + 1; j < Math.min(i + 10, textContent.items.length); j++) {
                 const candidate = textContent.items[j].str.trim();
-                // Basic validation: Title should be longer than 5 chars
-                if (candidate.length > 5) {
+                if (!candidate) continue;
+
+                // Strong match first (e.g. 18852-NOV-38-P-XB-9022).
+                if (DRAWING_NUMBER_PATTERN.test(candidate)) {
                     sheetTitle = candidate;
                     break; // Found it
                 }
+
+                // Fallback option if no strong match appears in the lookahead window.
+                if (!bestFallbackCandidate && candidate.length > 5) {
+                    bestFallbackCandidate = candidate;
+                }
+            }
+
+            if (sheetTitle === "Unknown Title" && bestFallbackCandidate) {
+                sheetTitle = bestFallbackCandidate;
             }
             break; // Stop searching for label
         }
