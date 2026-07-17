@@ -509,38 +509,27 @@ async function processPage(pdf, pageNumber) {
     // --- TITLE EXTRACTION LOGIC (UPDATED) ---
     let sheetTitle = "Unknown Title";
 
-    // Loop through all text items to find the label
-    for (let i = 0; i < textContent.items.length; i++) {
-        const str = textContent.items[i].str.toUpperCase().replace(/\s/g, ''); // Remove spaces for checking
+    const findDrawingNumberNearLabel = (labelNoSpaces) => {
+        for (let i = 0; i < textContent.items.length; i++) {
+            const str = String(textContent.items[i].str || '').toUpperCase().replace(/\s/g, '');
+            if (!str.includes(labelNoSpaces)) continue;
 
-        // Check for drawing number labels (spaces removed)
-        if (str.includes("COMPANYDRAWINGNUMBER") || str.includes("CONTRACTORDRAWINGNUMBER")) {
-
-            // The title value is likely in the *next* few text items
-            // We look ahead up to 10 items and prefer a drawing-number-like token.
-            let bestFallbackCandidate = '';
-            for (let j = i + 1; j < Math.min(i + 10, textContent.items.length); j++) {
-                const candidate = textContent.items[j].str.trim();
+            // Look only at the next 5 text items after the label.
+            for (let j = i + 1; j < Math.min(i + 6, textContent.items.length); j++) {
+                const candidate = String(textContent.items[j].str || '').trim();
                 if (!candidate) continue;
-
-                // Strong match first (e.g. 18852-NOV-38-P-XB-9022).
                 if (DRAWING_NUMBER_PATTERN.test(candidate)) {
-                    sheetTitle = candidate;
-                    break; // Found it
-                }
-
-                // Fallback option if no strong match appears in the lookahead window.
-                if (!bestFallbackCandidate && candidate.length > 5) {
-                    bestFallbackCandidate = candidate;
+                    return candidate;
                 }
             }
-
-            if (sheetTitle === "Unknown Title" && bestFallbackCandidate) {
-                sheetTitle = bestFallbackCandidate;
-            }
-            break; // Stop searching for label
         }
-    }
+        return '';
+    };
+
+    // Priority: CONTRACTOR DRAWING NUMBER first, then COMPANY DRAWING NUMBER.
+    sheetTitle = findDrawingNumberNearLabel('CONTRACTORDRAWINGNUMBER')
+        || findDrawingNumberNearLabel('COMPANYDRAWINGNUMBER')
+        || sheetTitle;
 
     // Fallback: If still unknown, check if any item starts with "SC26-3-NOV" directly
     if (sheetTitle === "Unknown Title") {
