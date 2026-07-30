@@ -539,6 +539,16 @@ async function processPage(pdf, pageNumber) {
         }
     }
 
+    // --- REVISION EXTRACTION ---
+    const REVISION_PATTERN = /^R\d{2,3}$/i;
+    let sheetRevision = "";
+    for (const item of textContent.items) {
+        if (REVISION_PATTERN.test(item.str.trim())) {
+            sheetRevision = item.str.trim().toUpperCase();
+            break;
+        }
+    }
+
     // --- TAG EXTRACTION LOGIC ---
     let matchesCount = 0;
     for (let itemIndex = 0; itemIndex < textContent.items.length; itemIndex++) {
@@ -612,7 +622,7 @@ async function processPage(pdf, pageNumber) {
             };
 
             pageDiv.appendChild(highlight);
-            addSidebarItem(matchText, pageNumber, sheetTitle, highlight, pdfRect);
+            addSidebarItem(matchText, pageNumber, sheetTitle, sheetRevision, highlight, pdfRect);
         }
 
         // Actuated valve fallback for split text items, e.g. "35PSV" on one line and "9015A" on the next.
@@ -664,7 +674,7 @@ async function processPage(pdf, pageNumber) {
                 };
 
                 pageDiv.appendChild(highlight);
-                addSidebarItem(matchText, pageNumber, sheetTitle, highlight, pdfRect);
+                addSidebarItem(matchText, pageNumber, sheetTitle, sheetRevision, highlight, pdfRect);
             }
         }
     }
@@ -741,7 +751,7 @@ function updateFooterList(pageNum) {
     });
 }
 
-function addSidebarItem(text, pageNum, title, highlightElement, pdfRect) {
+function addSidebarItem(text, pageNum, title, revision, highlightElement, pdfRect) {
     const id = allFoundTags.length;
 
     allFoundTags.push({ 
@@ -749,6 +759,7 @@ function addSidebarItem(text, pageNum, title, highlightElement, pdfRect) {
         tag: text, 
         page: pageNum, 
         title: title,
+        revision: revision,
         status: 'Pending',
         element: highlightElement,
         pdfRect: pdfRect
@@ -791,13 +802,15 @@ function createGroupedView(tags) {
                 tag: key,
                 occurrences: [],
                 pages: new Set(),
-                titles: new Set()
+                titles: new Set(),
+                revisions: new Set()
             };
             map.set(key, g);
         }
         g.occurrences.push(t);
         g.pages.add(t.page);
         if (t.title) g.titles.add(t.title);
+        if (t.revision) g.revisions.add(t.revision);
     }
 
     const groups = Array.from(map.values());
@@ -1045,19 +1058,20 @@ function exportToCSV() {
     }
     let csvContent = "data:text/csv;charset=utf-8,";
     if (duplicateMode === 'unique') {
-        csvContent += "Tag Number,Sheet Title(s),Page Number(s),Occurrences,Review Status\n";
+        csvContent += "Tag Number,Sheet Title(s),Page Number(s),Occurrences,Revision,Review Status\n";
         const groups = createGroupedView(allFoundTags);
         groups.forEach(g => {
             const titles = Array.from(g.titles).join(" | ");
             const pages = Array.from(g.pages).sort((a, b) => a - b).join(";");
+            const revisions = Array.from(g.revisions).join(" | ");
             const safeTitles = `"${titles.replace(/"/g, '""')}"`;
-            csvContent += `${g.tag},${safeTitles},"${pages}",${g.occurrences.length},${g.status}\n`;
+            csvContent += `${g.tag},${safeTitles},"${pages}",${g.occurrences.length},${revisions},${g.status}\n`;
         });
     } else {
-        csvContent += "Tag Number,Sheet Title,Page Number,Review Status\n";
+        csvContent += "Tag Number,Sheet Title,Page Number,Revision,Review Status\n";
         allFoundTags.forEach(row => {
             const safeTitle = `"${row.title.replace(/"/g, '""')}"`;
-            csvContent += `${row.tag},${safeTitle},${row.page},${row.status}\n`;
+            csvContent += `${row.tag},${safeTitle},${row.page},${row.revision || ""},${row.status}\n`;
         });
     }
 
