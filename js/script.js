@@ -155,7 +155,6 @@ document.querySelectorAll('input[name="dupMode"]').forEach(radio => {
     });
 });
 restoreRememberedSelections();
-renderSearchHelpPatterns();
 
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
@@ -271,51 +270,6 @@ function debounce(func, wait) {
         clearTimeout(timeout);
         timeout = setTimeout(later, wait);
     };
-}
-
-function regexToTextDescription(regexInput) {
-    let pattern = regexInput instanceof RegExp ? regexInput.source : String(regexInput || '');
-
-    // Remove word boundaries from display.
-    pattern = pattern.replace(/\\b/g, '');
-
-    const replacements = [
-        { regex: /\(\?:\\d\{4\}\|XXXX\)/g, text: '(4digits|XXXX)' },
-        { regex: /\[A-Z\]\{1,2\}V/g, text: '1to2letters_endingV' },
-        { regex: /\\d\{(\d+)\}/g, text: (_, count) => `${count}digits` },
-        { regex: /\[A-Z0-9\]\+/g, text: 'alphanumeric' },
-        { regex: /\[A-Z\]\+/g, text: 'letters' },
-        { regex: /\[A-Z\]\?/g, text: 'optional_letter' },
-        { regex: /\\d\+/g, text: 'digits' },
-        { regex: /\(\?:\\\.\\d\+\)\?/g, text: '(.digits optional)' },
-        { regex: /\(\?:\\\/\\d\+\)\?/g, text: '(/digits optional)' },
-        { regex: /\(\?:-digits"\)\?/g, text: '(-digits" optional)' },
-        { regex: /\\s\+/g, text: 'space' },
-        { regex: /\\"/g, text: '"' }
-    ];
-
-    for (const item of replacements) {
-        pattern = pattern.replace(item.regex, item.text);
-    }
-
-    // Final readability cleanup for leftover escapes and repeated spaces.
-    pattern = pattern
-        .replace(/\\\//g, '/')
-        .replace(/\\\./g, '.')
-        .replace(/\\/g, '')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
-
-    return pattern;
-}
-
-function renderSearchHelpPatterns() {
-    const linePatternEl = document.getElementById('line-pattern-help');
-    const valvePatternEl = document.getElementById('valve-pattern-help');
-    if (!linePatternEl || !valvePatternEl) return;
-
-    linePatternEl.textContent = `${regexToTextDescription(LINE_TAG_PATTERN)} OR ${regexToTextDescription(LINE_TAG_PATTERN_ALT)}`;
-    valvePatternEl.textContent = `${regexToTextDescription(VALVE_TAG_PATTERN)} OR ${regexToTextDescription(VALVE_TAG_PATTERN_ALT)}`;
 }
 
 function toggleLineListTools() {
