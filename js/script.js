@@ -273,13 +273,6 @@ function debounce(func, wait) {
     };
 }
 
-function toggleInfoBox() {
-    const infoBox = document.getElementById('info-box');
-    const btn = document.getElementById('toggle-info-btn');
-    infoBox.classList.toggle('collapsed');
-    btn.textContent = infoBox.classList.contains('collapsed') ? 'Show Info' : 'Hide Info';
-}
-
 function regexToTextDescription(regexInput) {
     let pattern = regexInput instanceof RegExp ? regexInput.source : String(regexInput || '');
 
@@ -319,12 +312,10 @@ function regexToTextDescription(regexInput) {
 function renderSearchHelpPatterns() {
     const linePatternEl = document.getElementById('line-pattern-help');
     const valvePatternEl = document.getElementById('valve-pattern-help');
-    const actuatedPatternEl = document.getElementById('actuated-pattern-help');
-    if (!linePatternEl || !valvePatternEl || !actuatedPatternEl) return;
+    if (!linePatternEl || !valvePatternEl) return;
 
     linePatternEl.textContent = `${regexToTextDescription(LINE_TAG_PATTERN)} OR ${regexToTextDescription(LINE_TAG_PATTERN_ALT)}`;
     valvePatternEl.textContent = `${regexToTextDescription(VALVE_TAG_PATTERN)} OR ${regexToTextDescription(VALVE_TAG_PATTERN_ALT)}`;
-    actuatedPatternEl.textContent = regexToTextDescription(ACTUATED_VALVE_TAG_PATTERN);
 }
 
 function toggleLineListTools() {
@@ -357,6 +348,10 @@ function toggleSidebar() {
     // Since we use CSS scaling on a fixed canvas size, it should be fine.
 }
 
+function toggleResultsSidebar() {
+    document.body.classList.toggle('results-sidebar-collapsed');
+}
+
 zoomSlider.addEventListener('input', (e) => {
     currentZoom = e.target.value;
     applyZoom();
@@ -368,9 +363,8 @@ async function handleFileUpload(e) {
     
     // Store PDF name for export feature
     window.currentPDFName = file.name.replace(/\.pdf$/i, '');
-
-    statusBar.textContent = 'PDF ready. Select options, then click Search and Find!';
     if (completionIcon) completionIcon.style.display = 'none';
+    await runAudit(file);
 }
 
 // Exposed for the Search button (index.html onclick)
@@ -460,6 +454,7 @@ async function runAudit(file) {
         if (totalMatches > 0) {
             exportBtn.style.display = 'flex';
             printBtn.style.display = 'flex';
+            document.body.classList.remove('results-sidebar-collapsed');
         }
         if (completionIcon) completionIcon.style.display = 'block';
         
