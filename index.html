@@ -5,25 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>P&ID Auditor - Sakarya</title>
 
-    <!-- PDF.js Library -->
-    <!-- Legacy CDN reference:
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    -->
+    <!-- Local PDF.js Library -->
     <script src="js/pdf.min.js"></script>
 
-    <!-- PDF-Lib Library for editing PDFs -->
-    <!-- Legacy CDN reference:
-    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-    -->
+    <!-- Local PDF-Lib Library for editing PDFs -->
     <script src="js/pdf-lib.min.js"></script>
 
-    <!-- SheetJS for Excel/CSV line list compare -->
-    <!-- Legacy CDN reference:
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    -->
+    <!-- Local SheetJS for Excel/CSV line list compare -->
     <script src="js/xlsx.full.min.js"></script>
 
-    <!-- External CSS -->
+    <!-- Local CSS -->
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body class="results-sidebar-collapsed">
@@ -112,6 +103,27 @@
                                 Export Line List XLSX
                             </button>
                         </div>
+                    </div>
+                </section>
+
+                <section class="sidebar-section pid-table-extraction-section">
+                    <div class="section-header">
+                        <div class="section-title">P&amp;ID Table Extraction</div>
+                        <span class="badge-beta">LOCAL</span>
+                    </div>
+                    <div class="pid-table-help">
+                        Read searchable P&amp;ID table rows for item tags and engineering attributes. Matching labels and values share a color.
+                    </div>
+                    <div class="form-block">
+                        <button id="extract-pid-tables-btn" class="btn btn-compare" type="button" disabled>
+                            Extract P&amp;ID Tables
+                        </button>
+                        <button id="export-pid-tables-btn" class="btn btn-secondary line-list-action-btn" type="button" disabled>
+                            Export Table CSV
+                        </button>
+                    </div>
+                    <div id="pid-table-extraction-status" class="pid-table-extraction-status" role="status">
+                        Load a P&amp;ID before extracting table values.
                     </div>
                 </section>
 
@@ -210,11 +222,28 @@
 
     <aside id="results-sidebar" aria-label="Found tags">
         <div class="results-sidebar-header">
-            <span>Found tags</span>
+            <div class="results-sidebar-heading">
+                <span id="results-sidebar-title">Found tags</span>
+                <div class="results-sidebar-tabs" role="tablist" aria-label="Results view">
+                    <button id="show-tags-view-btn" class="results-sidebar-tab active" type="button" role="tab" aria-selected="true">Tags</button>
+                    <button id="show-pid-table-view-btn" class="results-sidebar-tab" type="button" role="tab" aria-selected="false" disabled>Table data</button>
+                </div>
+            </div>
             <button class="btn-icon" onclick="toggleResultsSidebar()" title="Hide found tags">✕</button>
         </div>
         <div id="results-container">
-            <ul class="result-list" id="resultList"></ul>
+            <div id="tag-results-view">
+                <ul class="result-list" id="resultList"></ul>
+            </div>
+            <div id="pid-table-results-view" hidden>
+                <div id="pid-table-results-summary" class="pid-table-results-summary">No P&amp;ID table data loaded.</div>
+                <div class="pid-table-results-wrap">
+                    <table id="pid-table-results">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </aside>
 

@@ -1,6 +1,8 @@
 /* --- CSS STYLING --- */
 :root {
     --sidebar-width: 420px;
+    /* Adjust this value to make the right-side found-tags panel wider or narrower. */
+    --results-sidebar-width: 360px;
     --primary-blue: #0056b3;
     --success-green: #28a745;
     --danger-red: #dc3545;
@@ -44,7 +46,7 @@ body {
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 280px;
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--results-sidebar-width);
     height: 100vh;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background-color: var(--bg-color);
@@ -53,7 +55,7 @@ body {
 }
 
 body.sidebar-collapsed {
-    grid-template-columns: 0 minmax(0, 1fr) 280px;
+    grid-template-columns: 0 minmax(0, 1fr) var(--results-sidebar-width);
 }
 
 body.results-sidebar-collapsed {
@@ -791,8 +793,8 @@ body.sidebar-collapsed .compare-drawer {
 /* Results List */
 #results-sidebar {
     grid-column: 3;
-    width: 280px;
-    min-width: 250px;
+    width: var(--results-sidebar-width);
+    min-width: var(--results-sidebar-width);
     background: var(--sidebar-bg);
     border-left: 1px solid var(--sidebar-border);
     display: flex;
@@ -860,6 +862,77 @@ body.results-sidebar-collapsed #open-results-sidebar-btn {
 }
 
 .result-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+
+/* Group the occurrence view by sheet and page so metadata is shown once. */
+#results-sidebar .sheet-group {
+    list-style: none;
+    margin: 0 0 10px;
+    padding: 0;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fff;
+}
+
+#results-sidebar .sheet-group-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 10px;
+    background: #f3f6f9;
+    border-bottom: 1px solid var(--sidebar-border);
+}
+
+#results-sidebar .sheet-group-title {
+    min-width: 0;
+    color: var(--sidebar-text);
+    font-size: 0.78rem;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
+#results-sidebar .sheet-group-count {
+    flex: 0 0 auto;
+    color: var(--sidebar-muted);
+    font-size: 0.68rem;
+    white-space: nowrap;
+}
+
+#results-sidebar .sheet-pages {
+    padding: 0 8px 4px;
+}
+
+#results-sidebar .sheet-page-group + .sheet-page-group {
+    border-top: 1px solid var(--sidebar-border);
+}
+
+#results-sidebar .sheet-page-label {
+    padding: 7px 2px 3px;
+    color: var(--sidebar-muted);
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+#results-sidebar .sheet-tag-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0;
+    padding: 0 0 5px;
+}
+
+#results-sidebar .sheet-tag-list .result-item {
+    border: 0;
+    border-radius: 4px;
+    padding: 8px 6px;
+    box-shadow: none;
+}
+
+#results-sidebar .sheet-tag-list .result-item:hover {
+    box-shadow: none;
+}
 
 .result-item {
     background-color: #fff;
@@ -2843,11 +2916,12 @@ body.sidebar-collapsed .compare-drawer {
 @media (max-width: 960px) {
     :root {
         --sidebar-width: min(88vw, 352px);
+        --results-sidebar-width: min(82vw, 300px);
     }
 
     body,
     body.sidebar-collapsed {
-        grid-template-columns: minmax(0, 1fr) 250px;
+        grid-template-columns: minmax(0, 1fr) var(--results-sidebar-width);
     }
 
     body.results-sidebar-collapsed,
@@ -2882,8 +2956,8 @@ body.sidebar-collapsed .compare-drawer {
 
     #results-sidebar {
         grid-column: 2;
-        width: 250px;
-        min-width: 220px;
+        width: var(--results-sidebar-width);
+        min-width: var(--results-sidebar-width);
     }
 
     #viewer-empty-state {
@@ -2950,4 +3024,244 @@ body.sidebar-collapsed .compare-drawer {
         animation: none !important;
         transition: none !important;
     }
+}
+
+/* The current-page tag drawer is no longer shown in the main interface. */
+#sticky-footer {
+    display: none !important;
+}
+
+/* --- P&ID TABLE EXTRACTION --- */
+.pid-table-extraction-section {
+    white-space: normal;
+}
+
+.pid-table-help {
+    margin: 4px 0 10px;
+    color: var(--sidebar-muted);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.pid-table-extraction-status {
+    margin-top: 8px;
+    color: var(--sidebar-muted);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.pid-table-extraction-status.ok {
+    color: #166534;
+}
+
+.pid-table-extraction-status.warning {
+    color: #92400e;
+}
+
+.pid-table-extraction-status.error {
+    color: #991b1b;
+}
+
+.results-sidebar-heading {
+    min-width: 0;
+}
+
+.results-sidebar-tabs {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+    letter-spacing: normal;
+    text-transform: none;
+}
+
+.results-sidebar-tab {
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 4px 7px;
+    background: #ffffff;
+    color: #4b5563;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.results-sidebar-tab.active {
+    background: #e8f1fb;
+    border-color: #93c5fd;
+    color: #1d4ed8;
+}
+
+.results-sidebar-tab:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+.pid-table-results-summary {
+    padding: 12px 0 8px;
+    color: var(--sidebar-muted);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.pid-table-results-wrap {
+    overflow-x: auto;
+    border: 1px solid #dbe2ea;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+#pid-table-results {
+    width: 100%;
+    min-width: 1180px;
+    border-collapse: collapse;
+    color: #1f2937;
+    font-size: 10px;
+}
+
+#pid-table-results th,
+#pid-table-results td {
+    padding: 7px 6px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+    vertical-align: top;
+    line-height: 1.3;
+}
+
+#pid-table-results th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f3f4f6;
+    color: #374151;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+#pid-table-results tbody tr {
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+#pid-table-results tbody tr:hover,
+#pid-table-results tbody tr.active {
+    background: #eff6ff;
+}
+
+#pid-table-results tbody tr.review {
+    background: #fffbeb;
+}
+
+#pid-table-results tbody tr.review:hover,
+#pid-table-results tbody tr.review.active {
+    background: #fef3c7;
+}
+
+.pid-table-status {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 5px;
+    font-size: 9px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.pid-table-status.complete {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.pid-table-status.review {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.pid-table-status.ambiguous {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.pid-table-highlight {
+    position: absolute;
+    z-index: 15;
+    border: 2px solid;
+    border-radius: 3px;
+    pointer-events: none;
+    box-sizing: border-box;
+}
+
+.pid-table-highlight-tag {
+    border-color: #b91c1c;
+    background: rgba(248, 113, 113, 0.22);
+}
+
+.pid-table-highlight-value {
+    border-color: #15803d;
+    background: rgba(74, 222, 128, 0.22);
+}
+
+.pid-table-highlight-description {
+    border-color: #2563eb;
+    background: rgba(96, 165, 250, 0.22);
+}
+
+.pid-table-highlight-spec {
+    border-color: #15803d;
+    background: rgba(74, 222, 128, 0.22);
+}
+
+/* Each attribute gets one color so its label and extracted value are easy to pair. */
+.pid-table-highlight.pid-field-red {
+    border-color: #dc2626;
+    background: rgba(248, 113, 113, 0.22);
+}
+
+.pid-table-highlight.pid-field-blue {
+    border-color: #2563eb;
+    background: rgba(96, 165, 250, 0.22);
+}
+
+.pid-table-highlight.pid-field-purple {
+    border-color: #7c3aed;
+    background: rgba(167, 139, 250, 0.22);
+}
+
+.pid-table-highlight.pid-field-cyan {
+    border-color: #0891b2;
+    background: rgba(103, 232, 249, 0.24);
+}
+
+.pid-table-highlight.pid-field-orange {
+    border-color: #ea580c;
+    background: rgba(251, 146, 60, 0.24);
+}
+
+.pid-table-highlight.pid-field-teal {
+    border-color: #0f766e;
+    background: rgba(45, 212, 191, 0.24);
+}
+
+.pid-table-highlight.pid-field-pink {
+    border-color: #db2777;
+    background: rgba(244, 114, 182, 0.22);
+}
+
+.pid-table-highlight.pid-field-indigo {
+    border-color: #4f46e5;
+    background: rgba(129, 140, 248, 0.22);
+}
+
+.pid-table-highlight.pid-field-green {
+    border-color: #15803d;
+    background: rgba(74, 222, 128, 0.22);
+}
+
+.pid-table-highlight.pid-field-brown {
+    border-color: #92400e;
+    background: rgba(251, 191, 36, 0.22);
+}
+
+.pid-table-highlight.pid-field-olive {
+    border-color: #4d7c0f;
+    background: rgba(163, 230, 53, 0.24);
 }

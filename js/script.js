@@ -1,5 +1,6 @@
 // --- CONFIGURATION ---
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// Keep PDF processing fully local. The matching worker is stored in this project.
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'js/pdf.worker.min.js';
 
 // Line tag patterns (original first as the canonical reference)
 // Original example: 10-2"-HC-1234-01-A
@@ -28,6 +29,116 @@ const ACTUATED_PREFIX_PATTERN = /^\d{2}[A-Z]{1,2}V$/;
 const ACTUATED_SUFFIX_PATTERN = /^\d{4}[A-Z]?$/;
 let activeTagPattern = LINE_TAG_PATTERN;
 let currentSearchModes = new Set(['line']);
+
+// P&ID table extraction is intentionally separate from tag/valve searching.
+// These aliases are matched against the searchable PDF text layer only.
+const PID_TABLE_FIELDS = [
+    {
+        key: 'itemTag',
+        label: 'Item tag',
+        colorClass: 'pid-field-red',
+        aliases: [
+            'ITEM TAG',
+            'ITEM TAG NO',
+            'ITEM TAG NUMBER',
+            'LINE TAG NO',
+            'LINE TAG NUMBER',
+            'LINE NUMBER',
+            'LINE NO',
+            'LINE TAG',
+            'TAG NO',
+            'TAG NUMBER'
+        ]
+    },
+    {
+        key: 'description',
+        label: 'Description',
+        colorClass: 'pid-field-blue',
+        aliases: [
+            'EQUIPMENT DESCRIPTION',
+            'PUMP DESCRIPTION',
+            'LINE DESCRIPTION',
+            'SERVICE DESCRIPTION',
+            'DESCRIPTION',
+            'SERVICE'
+        ]
+    },
+    {
+        key: 'quantityRedundancy',
+        label: 'Quantity x redundancy',
+        colorClass: 'pid-field-purple',
+        aliases: [
+            'QUANTITY X REDUNDANCY',
+            'QUANTITYXREDUNDANCY',
+            'QUANTITY AND REDUNDANCY',
+            'QTY X REDUNDANCY',
+            'QUANTITY REDUNDANCY',
+            'REDUNDANCY'
+        ]
+    },
+    {
+        key: 'ratedFlowRate',
+        label: 'Rated flow rate',
+        colorClass: 'pid-field-cyan',
+        aliases: ['RATED FLOW RATE', 'DESIGN FLOW RATE', 'RATED FLOW', 'FLOW RATE', 'CAPACITY']
+    },
+    {
+        key: 'dischargePressure',
+        label: 'Discharge pressure',
+        colorClass: 'pid-field-orange',
+        aliases: ['DISCHARGE PRESSURE', 'OUTLET PRESSURE', 'DISCHARGE PRESS']
+    },
+    {
+        key: 'differentialHead',
+        label: 'Differential head',
+        colorClass: 'pid-field-teal',
+        aliases: ['TOTAL DIFFERENTIAL HEAD', 'DIFFERENTIAL HEAD', 'DIFFERENTIAL PRESSURE']
+    },
+    {
+        key: 'designTemperature',
+        label: 'Design temperature',
+        colorClass: 'pid-field-pink',
+        aliases: ['DESIGN TEMPERATURE', 'DESIGN TEMP', 'DESIGN T']
+    },
+    {
+        key: 'designPressure',
+        label: 'Design pressure',
+        colorClass: 'pid-field-indigo',
+        aliases: ['DESIGN PRESSURE', 'DESIGN PRESS', 'DESIGN P']
+    },
+    {
+        key: 'operatingTemperature',
+        label: 'Operating temperature',
+        colorClass: 'pid-field-green',
+        aliases: ['OPERATING TEMPERATURE', 'OPERATING TEMP', 'OPERATION TEMPERATURE', 'OPERATING T']
+    },
+    {
+        key: 'motorPower',
+        label: 'Motor power',
+        colorClass: 'pid-field-brown',
+        aliases: ['MOTOR POWER', 'MOTOR RATING', 'MOTOR KW', 'POWER']
+    },
+    {
+        key: 'materialInsulation',
+        label: 'Material / insulation',
+        colorClass: 'pid-field-olive',
+        aliases: [
+            'MATERIAL OF CONSTRUCTION',
+            'MATERIAL / INSULATION',
+            'INSULATION (TYPE/NO)',
+            'INSULATION TYPE / NO',
+            'MATERIAL INSULATION',
+            'MATERIAL',
+            'INSULATION'
+        ]
+    }
+];
+
+const TABLE_LINE_TAG_RE = new RegExp(LINE_TAG_PATTERN_ALT.source, 'i');
+const GENERIC_ITEM_TAG_RE = /\b[A-Z]{1,8}(?:[-_/]\s*\d{1,8}|\s*\d{1,8}[A-Z]?)(?:[-_/][A-Z0-9]+)*\b/i;
+const TABLE_LINE_Y_TOLERANCE = 6;
+const TABLE_MAX_HEADER_ITEMS = 5;
+const TABLE_MAX_KEY_VALUE_GAP = 140;
 
 const RENDER_SCALE = 2.0; 
 let allFoundTags = []; 
@@ -76,12 +187,25 @@ const compareShowPdfAttributesCheckbox = document.getElementById('compare-show-p
 const compareAttributeSelect = document.getElementById('compare-attr-select');
 const exportCompareBtn = document.getElementById('export-compare-btn');
 const compareAttributeOverlay = document.getElementById('compare-attribute-overlay');
+const extractPidTablesBtn = document.getElementById('extract-pid-tables-btn');
+const exportPidTablesBtn = document.getElementById('export-pid-tables-btn');
+const pidTableExtractionStatus = document.getElementById('pid-table-extraction-status');
+const resultsSidebarTitle = document.getElementById('results-sidebar-title');
+const showTagsViewBtn = document.getElementById('show-tags-view-btn');
+const showPidTableViewBtn = document.getElementById('show-pid-table-view-btn');
+const tagResultsView = document.getElementById('tag-results-view');
+const pidTableResultsView = document.getElementById('pid-table-results-view');
+const pidTableResultsSummary = document.getElementById('pid-table-results-summary');
+const pidTableResults = document.getElementById('pid-table-results');
 
 // Track current page for footer updates
 let currentPageNumber = 1;
 let pdfDoc = null; // Store global PDF reference
 let pdfContentWidth = 0; // Max width of pages
 let pdfContentHeight = 0; // Total height of pages
+const pidPageMeta = new Map();
+let pidTableRows = [];
+let activePidTableRowId = null;
 const compareDrawerState = {
     fileName: '',
     sheetName: '',
@@ -145,6 +269,26 @@ if (compareDrawerResizeHandle) {
 }
 document.addEventListener('mousemove', onCompareDrawerResizeMove);
 document.addEventListener('mouseup', stopCompareDrawerResize);
+
+if (extractPidTablesBtn) {
+    extractPidTablesBtn.addEventListener('click', extractPidTables);
+}
+if (exportPidTablesBtn) {
+    exportPidTablesBtn.addEventListener('click', exportPidTablesToCsv);
+}
+if (showTagsViewBtn) {
+    showTagsViewBtn.addEventListener('click', () => showResultsView('tags'));
+}
+if (showPidTableViewBtn) {
+    showPidTableViewBtn.addEventListener('click', () => showResultsView('tables'));
+}
+if (pidTableResults) {
+    pidTableResults.addEventListener('click', (event) => {
+        const rowElement = event.target.closest('tbody tr[data-table-row-id]');
+        if (!rowElement) return;
+        jumpToPidTableRow(Number(rowElement.dataset.tableRowId));
+    });
+}
 
 // Duplicate mode UI binding (Count all vs Combine)
 document.querySelectorAll('input[name="dupMode"]').forEach(radio => {
@@ -363,9 +507,19 @@ async function runAudit(file) {
     allFoundTags = [];
     resetCompareDrawerState();
     closeCompareDrawer();
+    pidPageMeta.clear();
+    pidTableRows = [];
+    activePidTableRowId = null;
+    clearPidTableHighlights();
+    renderPidTableResults();
+    showResultsView('tags');
+    pdfDoc = null;
     currentPageNumber = 1;
     exportBtn.style.display = 'none';
     printBtn.style.display = 'none';
+    if (extractPidTablesBtn) extractPidTablesBtn.disabled = true;
+    if (exportPidTablesBtn) exportPidTablesBtn.disabled = true;
+    setPidTableExtractionStatus('Reading the P&ID text layer is in progress.');
 
     // Busy UI
     if (searchBtn) searchBtn.disabled = true;
@@ -411,6 +565,7 @@ async function runAudit(file) {
             document.body.classList.remove('results-sidebar-collapsed');
         }
         if (completionIcon) completionIcon.style.display = 'block';
+        if (extractPidTablesBtn) extractPidTablesBtn.disabled = false;
         
         // Collapse the footer by default after PDF loads
         const footer = document.getElementById('sticky-footer');
@@ -426,6 +581,7 @@ async function runAudit(file) {
         spinner.style.display = 'none';
         fileInput.disabled = false;
         if (searchBtn) searchBtn.disabled = false;
+        if (!pdfDoc && extractPidTablesBtn) extractPidTablesBtn.disabled = true;
     }
 }
 
@@ -497,6 +653,11 @@ async function processPage(pdf, pageNumber) {
             break;
         }
     }
+
+    pidPageMeta.set(pageNumber, {
+        title: sheetTitle,
+        revision: sheetRevision
+    });
 
     // --- TAG EXTRACTION LOGIC ---
     let matchesCount = 0;
@@ -634,6 +795,961 @@ async function processPage(pdf, pageNumber) {
     return matchesCount;
 }
 
+// ============================================
+// P&ID TABLE EXTRACTION
+// ============================================
+
+function setPidTableExtractionStatus(text, state = '') {
+    if (!pidTableExtractionStatus) return;
+    pidTableExtractionStatus.textContent = text;
+    pidTableExtractionStatus.className = `pid-table-extraction-status ${state}`.trim();
+}
+
+function showResultsView(view) {
+    const showTables = view === 'tables' && pidTableRows.length > 0;
+
+    if (tagResultsView) tagResultsView.hidden = showTables;
+    if (pidTableResultsView) pidTableResultsView.hidden = !showTables;
+    if (resultsSidebarTitle) resultsSidebarTitle.textContent = showTables ? 'P&ID table values' : 'Found tags';
+
+    if (showTagsViewBtn) {
+        showTagsViewBtn.classList.toggle('active', !showTables);
+        showTagsViewBtn.setAttribute('aria-selected', showTables ? 'false' : 'true');
+    }
+    if (showPidTableViewBtn) {
+        showPidTableViewBtn.classList.toggle('active', showTables);
+        showPidTableViewBtn.setAttribute('aria-selected', showTables ? 'true' : 'false');
+        showPidTableViewBtn.disabled = pidTableRows.length === 0;
+    }
+}
+
+function getPidTableTextBox(item) {
+    const transform = item.transform || [];
+    const x = Number(transform[4] || 0);
+    const y = Number(transform[5] || 0);
+    const width = Number(item.width || 0);
+    const height = Math.abs(Number(transform[3] || 0)) || Number(item.height || 0) || 10;
+
+    return {
+        text: String(item.str || ''),
+        x,
+        y,
+        right: x + width,
+        centerX: x + (width / 2),
+        centerY: y,
+        height
+    };
+}
+
+function normalizePidTableText(text) {
+    return String(text || '')
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toUpperCase();
+}
+
+function compactPidTableText(text) {
+    return normalizePidTableText(text).replace(/[^A-Z0-9]/g, '');
+}
+
+function buildPidTableLines(textItems) {
+    const boxes = (textItems || [])
+        .map(getPidTableTextBox)
+        .filter(item => item.text.trim())
+        .sort((a, b) => {
+            if (Math.abs(a.centerY - b.centerY) > TABLE_LINE_Y_TOLERANCE) {
+                return b.centerY - a.centerY;
+            }
+            return a.x - b.x;
+        });
+
+    const lines = [];
+    for (const item of boxes) {
+        let line = lines.find(candidate =>
+            Math.abs(candidate.centerY - item.centerY) <= TABLE_LINE_Y_TOLERANCE
+        );
+
+        if (!line) {
+            line = { centerY: item.centerY, items: [] };
+            lines.push(line);
+        }
+
+        line.items.push(item);
+        line.centerY = line.items.reduce((sum, entry) => sum + entry.centerY, 0) / line.items.length;
+    }
+
+    for (const line of lines) {
+        line.items.sort((a, b) => a.x - b.x);
+        line.text = line.items.map(item => item.text).join(' ').replace(/\s+/g, ' ').trim();
+    }
+
+    return lines.sort((a, b) => b.centerY - a.centerY);
+}
+
+function findPidTableHeaderMatches(line) {
+    const matches = [];
+
+    for (const field of PID_TABLE_FIELDS) {
+        const aliases = field.aliases
+            .slice()
+            .sort((a, b) => compactPidTableText(b).length - compactPidTableText(a).length);
+        let found = null;
+
+        for (const alias of aliases) {
+            const aliasText = compactPidTableText(alias);
+
+            for (let start = 0; start < line.items.length && !found; start++) {
+                let combined = '';
+
+                for (
+                    let end = start;
+                    end < Math.min(line.items.length, start + TABLE_MAX_HEADER_ITEMS);
+                    end++
+                ) {
+                    combined += compactPidTableText(line.items[end].text);
+
+                    if (combined === aliasText) {
+                        found = {
+                            fieldKey: field.key,
+                            label: field.label,
+                            startIndex: start,
+                            endIndex: end,
+                            left: line.items[start].x,
+                            right: line.items[end].right,
+                            center: (line.items[start].x + line.items[end].right) / 2
+                        };
+                        break;
+                    }
+
+                    if (combined.length > aliasText.length && !aliasText.startsWith(combined)) {
+                        break;
+                    }
+                }
+            }
+
+            // Some PDF generators return the whole header plus punctuation
+            // as one item. Accept that item when an exact sequence was not found.
+            if (!found) {
+                const item = line.items.find(entry => compactPidTableText(entry.text).includes(aliasText));
+                if (item) {
+                    found = {
+                        fieldKey: field.key,
+                        label: field.label,
+                        startIndex: line.items.indexOf(item),
+                        endIndex: line.items.indexOf(item),
+                        left: item.x,
+                        right: item.right,
+                        center: (item.x + item.right) / 2
+                    };
+                }
+            }
+
+            if (found) break;
+        }
+
+        if (found) matches.push(found);
+    }
+
+    return matches;
+}
+
+function findPidTableHeaders(lines) {
+    return lines
+        .map((line, index) => ({
+            index,
+            line,
+            matches: findPidTableHeaderMatches(line)
+        }))
+        .filter(header =>
+            header.matches.some(match => match.fieldKey === 'itemTag') &&
+            header.matches.some(match => match.fieldKey !== 'itemTag')
+        );
+}
+
+function splitPidValueGroups(items) {
+    const groups = [];
+    const usableItems = (items || []).filter(item =>
+        item.text.trim() && !isPidRevisionMarker(item.text)
+    );
+
+    for (const item of usableItems) {
+        const previousGroup = groups[groups.length - 1];
+        const previousItem = previousGroup?.items?.[previousGroup.items.length - 1];
+        const gap = previousItem ? item.x - previousItem.right : Infinity;
+
+        if (previousGroup && gap <= 35) {
+            previousGroup.items.push(item);
+        } else {
+            groups.push({ items: [item] });
+        }
+    }
+
+    return groups.map(group => ({
+        items: group.items,
+        text: group.items.map(item => item.text).join(' ').replace(/\s+/g, ' ').trim()
+    }));
+}
+
+function isPidRevisionMarker(text) {
+    return /^R\d{1,3}$/i.test(String(text || '').trim());
+}
+
+function choosePidValueGroup(items, bounds = null) {
+    let groups = splitPidValueGroups(items)
+        .filter(group => group.text && !isPidRevisionMarker(group.text));
+
+    if (!groups.length) return null;
+
+    if (bounds) {
+        groups = groups.filter(group => {
+            const firstItem = group.items[0];
+            return firstItem && firstItem.x >= bounds.left && firstItem.x <= bounds.right;
+        });
+    }
+
+    // The first group after the label is the table value. Later groups are
+    // often revision bubbles or notes elsewhere on the drawing.
+    return groups[0] || null;
+}
+
+function findPidKeyValueOccurrences(lines) {
+    const occurrences = [];
+
+    lines.forEach((line, lineIndex) => {
+        const matches = findPidTableHeaderMatches(line);
+
+        // A key/value table has one recognized label per visual row. A line
+        // containing several labels is treated as a horizontal table header.
+        if (matches.length !== 1) return;
+
+        occurrences.push({
+            line,
+            lineIndex,
+            ...matches[0]
+        });
+    });
+
+    return occurrences;
+}
+
+function findPidKeyValueBlocks(lines) {
+    const occurrences = findPidKeyValueOccurrences(lines);
+    const blocks = [];
+
+    for (const occurrence of occurrences) {
+        let block = blocks[blocks.length - 1];
+        const previous = block?.occurrences?.[block.occurrences.length - 1];
+        const sameLabelColumn = previous && Math.abs(previous.left - occurrence.left) <= 28;
+        const verticalGap = previous
+            ? Math.abs(previous.line.centerY - occurrence.line.centerY)
+            : Infinity;
+        const startsAnotherTable = previous &&
+            verticalGap > 60 && occurrence.fieldKey === 'itemTag';
+        const closeVertically = previous &&
+            verticalGap <= TABLE_MAX_KEY_VALUE_GAP && !startsAnotherTable;
+
+        if (!block || !sameLabelColumn || !closeVertically) {
+            block = { occurrences: [] };
+            blocks.push(block);
+        }
+
+        block.occurrences.push(occurrence);
+    }
+
+    return blocks
+        .filter(block => {
+            const fields = new Set(block.occurrences.map(occurrence => occurrence.fieldKey));
+            const lineIndexes = new Set(block.occurrences.map(occurrence => occurrence.lineIndex));
+            return fields.size >= 3 && lineIndexes.size >= 3;
+        })
+        .sort((a, b) => b.occurrences.length - a.occurrences.length);
+}
+
+function getPidKeyValueBounds(block, lines = []) {
+    let candidateGroups = block.occurrences
+        .map(occurrence => choosePidValueGroup(occurrence.line.items.slice(occurrence.endIndex + 1)))
+        .filter(Boolean);
+
+    const labelRight = Math.max(...block.occurrences.map(occurrence => occurrence.right));
+
+    // Some PDF generators place the value on the next text line instead of
+    // sharing the label line. In that case, infer the value column from the
+    // nearest right-side group in the block's vertical span.
+    if (candidateGroups.length < 2 && lines.length) {
+        const centers = block.occurrences.map(occurrence => occurrence.line.centerY);
+        const minCenter = Math.min(...centers) - TABLE_MAX_KEY_VALUE_GAP;
+        const maxCenter = Math.max(...centers) + TABLE_MAX_KEY_VALUE_GAP;
+        const fallbackGroups = lines
+            .filter(line => line.centerY <= maxCenter && line.centerY >= minCenter)
+            .map(line => choosePidValueGroup(
+                line.items.filter(item => item.x >= labelRight + 8)
+            ))
+            .filter(Boolean);
+        const nearestValueStart = Math.min(
+            ...fallbackGroups.map(group => group.items[0]?.x).filter(Number.isFinite)
+        );
+        candidateGroups = candidateGroups.concat(fallbackGroups.filter(group =>
+            group.items[0]?.x <= nearestValueStart + 140
+        ));
+    }
+
+    if (!candidateGroups.length) {
+        return {
+            left: labelRight + 4,
+            right: labelRight + 4,
+            labelRight
+        };
+    }
+
+    const starts = candidateGroups
+        .map(group => group.items[0]?.x)
+        .filter(value => Number.isFinite(value))
+        .sort((a, b) => a - b);
+    const rights = candidateGroups
+        .map(group => group.items[group.items.length - 1]?.right)
+        .filter(value => Number.isFinite(value))
+        .sort((a, b) => a - b);
+
+    if (!starts.length || !rights.length) return null;
+
+    // The first value group on each known label row gives us the value
+    // column. Use the outer observed edges rather than a fixed page-wide
+    // range so nearby drawing notes cannot become table values.
+    return {
+        left: Math.min(...starts) - 24,
+        right: Math.max(...rights) + 24,
+        labelRight: Math.max(...block.occurrences.map(occurrence => occurrence.right))
+    };
+}
+
+function findPidKeyValueRowAnchors(lines, block, valueBounds) {
+    const occurrencesByLine = new Map(
+        block.occurrences.map(occurrence => [occurrence.lineIndex, occurrence])
+    );
+    const labelLeft = Math.min(...block.occurrences.map(occurrence => occurrence.left));
+    const knownLabelRight = Math.max(...block.occurrences.map(occurrence => occurrence.right));
+    const labelRight = Math.max(knownLabelRight, (valueBounds?.left ?? knownLabelRight) - 8);
+    const knownCenters = block.occurrences.map(occurrence => occurrence.line.centerY);
+    const knownGaps = [];
+
+    for (let index = 1; index < knownCenters.length; index++) {
+        const gap = Math.abs(knownCenters[index - 1] - knownCenters[index]);
+        if (gap > TABLE_LINE_Y_TOLERANCE) knownGaps.push(gap);
+    }
+
+    const median = values => values[Math.floor(values.length / 2)];
+    const defaultGap = knownGaps.length
+        ? Math.max(18, Math.min(60, median(knownGaps)))
+        : 28;
+    const minCenter = Math.min(...knownCenters) - defaultGap;
+    const maxCenter = Math.max(...knownCenters) + defaultGap;
+    const anchors = block.occurrences.map(occurrence => ({
+        lineIndex: occurrence.lineIndex,
+        centerY: occurrence.line.centerY,
+        known: true
+    }));
+
+    // Use every left-column text row as a boundary, even when its label is
+    // not in PID_TABLE_FIELDS. This prevents an unknown field between two
+    // known fields from being swallowed by the previous field's value.
+    lines.forEach((line, lineIndex) => {
+        if (occurrencesByLine.has(lineIndex) || line.centerY > maxCenter || line.centerY < minCenter) return;
+
+        const hasLeftColumnText = line.items.some(item =>
+            item.x >= labelLeft - 45 &&
+            item.x <= labelLeft + 55 &&
+            item.right <= labelRight
+        );
+
+        if (hasLeftColumnText) {
+            anchors.push({
+                lineIndex,
+                centerY: line.centerY,
+                known: false
+            });
+        }
+    });
+
+    return anchors.sort((a, b) => b.centerY - a.centerY);
+}
+
+function buildPidKeyValueRowBands(lines, block, valueBounds) {
+    const anchors = findPidKeyValueRowAnchors(lines, block, valueBounds);
+    const gaps = [];
+
+    for (let index = 1; index < anchors.length; index++) {
+        const gap = Math.abs(anchors[index - 1].centerY - anchors[index].centerY);
+        if (gap > TABLE_LINE_Y_TOLERANCE) gaps.push(gap);
+    }
+
+    const median = values => values[Math.floor(values.length / 2)];
+    const defaultGap = gaps.length
+        ? Math.max(18, Math.min(60, median(gaps)))
+        : 28;
+    const bands = new Map();
+
+    anchors.forEach((anchor, index) => {
+        const previous = anchors[index - 1];
+        const next = anchors[index + 1];
+        const top = previous
+            ? (previous.centerY + anchor.centerY) / 2
+            : anchor.centerY + (defaultGap / 2);
+        const bottom = next
+            ? (anchor.centerY + next.centerY) / 2
+            : anchor.centerY - (defaultGap / 2);
+
+        bands.set(anchor.lineIndex, { top, bottom });
+    });
+
+    return bands;
+}
+
+function collectPidKeyValueCell(lines, occurrence, valueBounds, rowBand) {
+    const valueItems = [];
+    const valueLeft = Math.max(
+        valueBounds?.left ?? occurrence.right + 20,
+        valueBounds?.labelRight ? valueBounds.labelRight + 4 : occurrence.right + 20
+    );
+    const valueRight = valueBounds?.right ?? Infinity;
+    const top = rowBand?.top ?? occurrence.line.centerY + 36;
+    const bottom = rowBand?.bottom ?? occurrence.line.centerY - 36;
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        const line = lines[lineIndex];
+        if (!line) continue;
+
+        if (line.centerY > top || line.centerY < bottom) continue;
+
+        for (let itemIndex = 0; itemIndex < line.items.length; itemIndex++) {
+            const item = line.items[itemIndex];
+            if (lineIndex === occurrence.lineIndex && itemIndex <= occurrence.endIndex) continue;
+            if (item.x < valueLeft || item.x > valueRight) continue;
+            if (isPidRevisionMarker(item.text)) continue;
+            valueItems.push(item);
+        }
+    }
+
+    return {
+        items: valueItems,
+        text: valueItems.map(item => item.text).join(' ').replace(/\s+/g, ' ').trim()
+    };
+}
+
+function extractPidKeyValueRows(lines, pageNumber, pageLabel) {
+    const blocks = findPidKeyValueBlocks(lines);
+    const rows = [];
+
+    for (const block of blocks) {
+        const values = {};
+        const boxes = {};
+        const labelBoxes = {};
+        for (const field of PID_TABLE_FIELDS) {
+            values[field.key] = '';
+            boxes[field.key] = [];
+            labelBoxes[field.key] = [];
+        }
+
+        const blockOccurrences = block.occurrences;
+        const valueBounds = getPidKeyValueBounds(block, lines);
+        const rowBands = buildPidKeyValueRowBands(lines, block, valueBounds);
+        for (const occurrence of blockOccurrences) {
+            const cell = collectPidKeyValueCell(
+                lines,
+                occurrence,
+                valueBounds,
+                rowBands.get(occurrence.lineIndex)
+            );
+            labelBoxes[occurrence.fieldKey].push(
+                ...occurrence.line.items.slice(occurrence.startIndex, occurrence.endIndex + 1)
+            );
+            if (!cell.items.length) continue;
+
+            if (values[occurrence.fieldKey] && cell.text) {
+                values[occurrence.fieldKey] = `${values[occurrence.fieldKey]} ${cell.text}`
+                    .replace(/\s+/g, ' ')
+                    .trim();
+            } else {
+                values[occurrence.fieldKey] = cell.text;
+            }
+            boxes[occurrence.fieldKey].push(...cell.items);
+        }
+
+        if (!values.itemTag) continue;
+
+        const row = {
+            id: -1,
+            page: pageNumber,
+            pid: pageLabel,
+            values,
+            boxes,
+            labelBoxes,
+            flags: [],
+            status: 'complete',
+            anchorY: blockOccurrences[0].line.centerY,
+            rawText: blockOccurrences.map(occurrence => occurrence.line.text).join(' '),
+            tagMatchCount: 1,
+            headerIndex: blockOccurrences[0].lineIndex
+        };
+
+        refreshPidTableRowStatus(row);
+        rows.push(row);
+    }
+
+    return rows;
+}
+
+function buildPidTableColumns(header) {
+    const matches = header.matches
+        .slice()
+        .sort((a, b) => a.center - b.center);
+
+    return matches.map((match, index) => ({
+        fieldKey: match.fieldKey,
+        label: match.label,
+        left: index === 0 ? -Infinity : (matches[index - 1].center + match.center) / 2,
+        right: index === matches.length - 1 ? Infinity : (match.center + matches[index + 1].center) / 2
+    }));
+}
+
+function assignPidTableLineToColumns(line, columns) {
+    const cells = {};
+    for (const field of PID_TABLE_FIELDS) {
+        cells[field.key] = { items: [], text: '' };
+    }
+
+    for (const item of line.items) {
+        const column = columns.find(candidate =>
+            item.centerX >= candidate.left && item.centerX < candidate.right
+        );
+        if (!column || !cells[column.fieldKey]) continue;
+        cells[column.fieldKey].items.push(item);
+    }
+
+    for (const field of PID_TABLE_FIELDS) {
+        cells[field.key].text = cells[field.key].items
+            .map(item => item.text)
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    return cells;
+}
+
+function extractPidTableTags(text, allowPlainValue = false) {
+    const candidate = normalizePidTableText(text).replace(/\s+/g, '');
+    const lineTagPattern = new RegExp(TABLE_LINE_TAG_RE.source, 'ig');
+    const lineTags = candidate.match(lineTagPattern) || [];
+    if (lineTags.length) return lineTags;
+
+    const genericCandidate = normalizePidTableText(text);
+    const genericPattern = new RegExp(GENERIC_ITEM_TAG_RE.source, 'ig');
+    const genericTags = genericCandidate.match(genericPattern) || [];
+    if (!allowPlainValue) return genericTags;
+
+    const plainValue = genericCandidate.trim();
+    return plainValue && !isPidRevisionMarker(plainValue) ? [plainValue] : [];
+}
+
+function appendPidTableCell(row, fieldKey, cell) {
+    if (!cell || !cell.items.length) return;
+
+    const value = cell.text.trim();
+    if (value && row.values[fieldKey] && row.values[fieldKey] !== value) {
+        row.values[fieldKey] = `${row.values[fieldKey]} ${value}`.replace(/\s+/g, ' ').trim();
+    } else if (value && !row.values[fieldKey]) {
+        row.values[fieldKey] = value;
+    }
+
+    row.boxes[fieldKey].push(...cell.items);
+}
+
+function createPidTableRow(pageNumber, header, line, cells, tagMatches, pageLabel) {
+    const values = {};
+    const boxes = {};
+    const labelBoxes = {};
+    for (const field of PID_TABLE_FIELDS) {
+        values[field.key] = '';
+        boxes[field.key] = [];
+        labelBoxes[field.key] = [];
+
+        const headerMatch = header.matches.find(match => match.fieldKey === field.key);
+        if (headerMatch) {
+            labelBoxes[field.key].push(
+                ...header.line.items.slice(headerMatch.startIndex, headerMatch.endIndex + 1)
+            );
+        }
+    }
+
+    const row = {
+        id: -1,
+        page: pageNumber,
+        pid: pageLabel,
+        values,
+        boxes,
+        labelBoxes,
+        flags: [],
+        status: 'complete',
+        anchorY: line.centerY,
+        rawText: line.text,
+        tagMatchCount: tagMatches.length,
+        headerIndex: header.index
+    };
+
+    for (const field of PID_TABLE_FIELDS) {
+        appendPidTableCell(row, field.key, cells[field.key]);
+    }
+
+    row.values.itemTag = tagMatches[0] || row.values.itemTag;
+
+    for (const field of PID_TABLE_FIELDS) {
+        if (!row.values[field.key]) row.flags.push(`${field.label} missing`);
+    }
+    if (tagMatches.length > 1) row.flags.push('Multiple item tags in row');
+
+    if (tagMatches.length > 1) row.status = 'ambiguous';
+    else if (row.flags.length) row.status = 'review';
+
+    return row;
+}
+
+function refreshPidTableRowStatus(row) {
+    row.flags = [];
+    for (const field of PID_TABLE_FIELDS) {
+        if (!row.values[field.key]) row.flags.push(`${field.label} missing`);
+    }
+
+    if (row.tagMatchCount > 1) row.flags.push('Multiple item tags in row');
+
+    if (row.tagMatchCount > 1) row.status = 'ambiguous';
+    else if (row.flags.length) row.status = 'review';
+    else row.status = 'complete';
+}
+
+function collectPidTableRowsForHeader(lines, header, pageNumber, pageLabel, nextHeader) {
+    const columns = buildPidTableColumns(header);
+    const rows = [];
+    let currentRow = null;
+    const endIndex = nextHeader ? nextHeader.index : lines.length;
+
+    for (let index = header.index + 1; index < endIndex; index++) {
+        const line = lines[index];
+        if (!line || line.centerY >= header.line.centerY - TABLE_LINE_Y_TOLERANCE) continue;
+
+        const cells = assignPidTableLineToColumns(line, columns);
+        const cellTagMatches = extractPidTableTags(cells.itemTag.text, true);
+        const fullLineMatches = extractPidTableTags(line.text);
+        const tagMatches = cellTagMatches.length ? cellTagMatches : fullLineMatches;
+
+        if (tagMatches.length) {
+            currentRow = createPidTableRow(pageNumber, header, line, cells, tagMatches, pageLabel);
+            rows.push(currentRow);
+            continue;
+        }
+
+        if (!currentRow) continue;
+
+        const verticalDistance = currentRow.anchorY - line.centerY;
+        const hasContinuationText = PID_TABLE_FIELDS
+            .filter(field => field.key !== 'itemTag')
+            .some(field => cells[field.key].text);
+
+        // A wrapped cell belongs to the previous row only when it is close to
+        // that row and has content in one of the recognized table columns.
+        if (verticalDistance >= 0 && verticalDistance <= 24 && hasContinuationText) {
+            for (const field of PID_TABLE_FIELDS) {
+                if (field.key !== 'itemTag') {
+                    appendPidTableCell(currentRow, field.key, cells[field.key]);
+                }
+            }
+            currentRow.rawText = `${currentRow.rawText} ${line.text}`.replace(/\s+/g, ' ').trim();
+        } else if (verticalDistance > 24) {
+            currentRow = null;
+        }
+    }
+
+    rows.forEach(refreshPidTableRowStatus);
+    return rows;
+}
+
+function dedupePidTableRows(rows) {
+    const unique = new Map();
+
+    for (const row of rows) {
+        const key = `${row.page}|${normalizeTagValue(row.values.itemTag)}|${Math.round(row.anchorY / 4)}`;
+        const previous = unique.get(key);
+        if (!previous || row.rawText.length > previous.rawText.length) {
+            unique.set(key, row);
+        }
+    }
+
+    return Array.from(unique.values())
+        .sort((a, b) => (a.page - b.page) || (b.anchorY - a.anchorY))
+        .map((row, index) => ({ ...row, id: index }));
+}
+
+function getPidPageLabel(pageNumber) {
+    const title = pidPageMeta.get(pageNumber)?.title;
+    if (title && title !== 'Unknown Title') return title;
+    return `${window.currentPDFName || 'P&ID'} - page ${pageNumber}`;
+}
+
+async function extractPidTables() {
+    if (!pdfDoc) {
+        showToast('Load and scan a P&ID before extracting tables', 'warning');
+        return;
+    }
+
+    if (extractPidTablesBtn) extractPidTablesBtn.disabled = true;
+    if (exportPidTablesBtn) exportPidTablesBtn.disabled = true;
+    pidTableRows = [];
+    activePidTableRowId = null;
+    clearPidTableHighlights();
+    renderPidTableResults();
+    setPidTableExtractionStatus('Starting table extraction...');
+
+    try {
+        const extractedRows = [];
+
+        for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
+            setPidTableExtractionStatus(`Reading table text from page ${pageNumber} of ${pdfDoc.numPages}...`);
+            const page = await pdfDoc.getPage(pageNumber);
+            const content = await page.getTextContent();
+            const lines = buildPidTableLines(content.items || []);
+            const headers = findPidTableHeaders(lines);
+            const pageLabel = getPidPageLabel(pageNumber);
+
+            // Support vertical two-column attribute tables where each label
+            // is on its own row and its value is on the right.
+            const keyValueRows = extractPidKeyValueRows(lines, pageNumber, pageLabel);
+            extractedRows.push(...keyValueRows);
+
+            // A page with a recognized key/value table should not also be
+            // interpreted as a horizontal row table; that can create a
+            // duplicate row with values taken from unrelated drawing notes.
+            if (!keyValueRows.length) {
+                for (let headerIndex = 0; headerIndex < headers.length; headerIndex++) {
+                    const header = headers[headerIndex];
+                    const nextHeader = headers.find(candidate => candidate.index > header.index);
+                    extractedRows.push(...collectPidTableRowsForHeader(
+                        lines,
+                        header,
+                        pageNumber,
+                        pageLabel,
+                        nextHeader
+                    ));
+                }
+            }
+        }
+
+        pidTableRows = dedupePidTableRows(extractedRows);
+        renderPidTableResults();
+
+        if (!pidTableRows.length) {
+            setPidTableExtractionStatus(
+                'No matching table headers and line-tag rows were found. The PDF must contain searchable text.',
+                'warning'
+            );
+            showResultsView('tags');
+            return;
+        }
+
+        if (exportPidTablesBtn) exportPidTablesBtn.disabled = false;
+        document.body.classList.remove('results-sidebar-collapsed');
+        showResultsView('tables');
+
+        const reviewCount = pidTableRows.filter(row => row.status !== 'complete').length;
+        const pageCount = new Set(pidTableRows.map(row => row.page)).size;
+        setPidTableExtractionStatus(
+            `Found ${pidTableRows.length} row(s) on ${pageCount} page(s). ${reviewCount} row(s) need review.`,
+            reviewCount ? 'warning' : 'ok'
+        );
+    } catch (error) {
+        console.error('P&ID table extraction failed:', error);
+        setPidTableExtractionStatus(`Table extraction failed: ${error.message || error}`, 'error');
+        showToast('P&ID table extraction failed', 'error');
+    } finally {
+        if (extractPidTablesBtn) extractPidTablesBtn.disabled = false;
+    }
+}
+
+function renderPidTableResults() {
+    if (!pidTableResults) return;
+    const thead = pidTableResults.querySelector('thead');
+    const tbody = pidTableResults.querySelector('tbody');
+    if (!thead || !tbody) return;
+
+    thead.innerHTML = '';
+    tbody.innerHTML = '';
+
+    const headerRow = document.createElement('tr');
+    for (const label of ['P&ID', 'Page', ...PID_TABLE_FIELDS.map(field => field.label), 'Status']) {
+        const th = document.createElement('th');
+        th.textContent = label;
+        headerRow.appendChild(th);
+    }
+    thead.appendChild(headerRow);
+
+    const completeCount = pidTableRows.filter(row => row.status === 'complete').length;
+    const reviewCount = pidTableRows.length - completeCount;
+    if (pidTableResultsSummary) {
+        pidTableResultsSummary.textContent = pidTableRows.length
+            ? `${pidTableRows.length} row(s) | ${completeCount} complete | ${reviewCount} for review`
+            : 'No P&ID table data loaded.';
+    }
+
+    for (const row of pidTableRows) {
+        const tr = document.createElement('tr');
+        tr.dataset.tableRowId = String(row.id);
+        tr.className = row.status === 'complete' ? '' : 'review';
+        if (row.id === activePidTableRowId) tr.classList.add('active');
+        tr.title = row.flags.length ? row.flags.join(' | ') : 'Click to locate this row on the P&ID';
+
+        const values = [row.pid, String(row.page), ...PID_TABLE_FIELDS.map(field => row.values[field.key])];
+        for (const value of values) {
+            const td = document.createElement('td');
+            td.textContent = value || '—';
+            tr.appendChild(td);
+        }
+
+        const statusCell = document.createElement('td');
+        const status = document.createElement('span');
+        status.className = `pid-table-status ${row.status}`;
+        status.textContent = row.status === 'complete'
+            ? 'Complete'
+            : row.status === 'ambiguous'
+                ? 'Ambiguous'
+                : 'Review';
+        statusCell.appendChild(status);
+        tr.appendChild(statusCell);
+        tbody.appendChild(tr);
+    }
+
+    if (showPidTableViewBtn) showPidTableViewBtn.disabled = pidTableRows.length === 0;
+}
+
+function clearPidTableHighlights() {
+    document.querySelectorAll('.pid-table-highlight').forEach(element => element.remove());
+}
+
+function getPidTableViewportRect(box, viewport) {
+    const rect = viewport.convertToViewportRectangle([
+        box.x,
+        box.y,
+        box.right,
+        box.y + box.height
+    ]);
+
+    return {
+        left: Math.min(rect[0], rect[2]),
+        top: Math.min(rect[1], rect[3]),
+        width: Math.abs(rect[2] - rect[0]),
+        height: Math.abs(rect[3] - rect[1])
+    };
+}
+
+async function renderPidTableRowHighlight(row) {
+    clearPidTableHighlights();
+    if (!row || !pdfDoc) return null;
+
+    const pageDiv = document.getElementById(`page-${row.page}`);
+    if (!pageDiv) return null;
+
+    const page = await pdfDoc.getPage(row.page);
+    const viewport = page.getViewport({ scale: RENDER_SCALE });
+    let firstHighlight = null;
+
+    for (const field of PID_TABLE_FIELDS) {
+        const boxes = [
+            ...(row.labelBoxes?.[field.key] || []).map(box => ({ box, kind: 'label' })),
+            ...(row.boxes?.[field.key] || []).map(box => ({ box, kind: 'value' }))
+        ];
+
+        for (const entry of boxes) {
+            const box = entry.box;
+            const rect = getPidTableViewportRect(box, viewport);
+            const highlight = document.createElement('div');
+            highlight.className = `pid-table-highlight ${field.colorClass} pid-table-${entry.kind}-highlight`;
+            highlight.title = `${field.label}: ${entry.kind === 'label' ? 'attribute label' : (row.values[field.key] || 'value')}`;
+            highlight.style.left = `${rect.left}px`;
+            highlight.style.top = `${rect.top}px`;
+            highlight.style.width = `${Math.max(3, rect.width)}px`;
+            highlight.style.height = `${Math.max(3, rect.height)}px`;
+            pageDiv.appendChild(highlight);
+            if (!firstHighlight) firstHighlight = highlight;
+        }
+    }
+
+    return firstHighlight;
+}
+
+async function jumpToPidTableRow(rowId) {
+    const row = pidTableRows.find(candidate => candidate.id === rowId);
+    if (!row) return;
+
+    activePidTableRowId = row.id;
+    renderPidTableResults();
+    showResultsView('tables');
+
+    const pageDiv = document.getElementById(`page-${row.page}`);
+    if (pageDiv) {
+        pageDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        pageDiv.style.transition = 'box-shadow 0.25s ease';
+        pageDiv.style.boxShadow = '0 0 0 4px rgba(37, 99, 235, 0.65), 0 8px 24px rgba(23, 38, 53, 0.16)';
+        setTimeout(() => {
+            pageDiv.style.boxShadow = '';
+        }, 1200);
+    }
+
+    const firstHighlight = await renderPidTableRowHighlight(row);
+    if (firstHighlight) {
+        firstHighlight.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    }
+}
+
+function csvCell(value) {
+    return `"${String(value ?? '').replace(/"/g, '""')}"`;
+}
+
+function exportPidTablesToCsv() {
+    if (!pidTableRows.length) {
+        showToast('Extract P&ID table data first', 'warning');
+        return;
+    }
+
+    const rows = [[
+        'P&ID',
+        'Page',
+        ...PID_TABLE_FIELDS.map(field => field.label),
+        'Status',
+        'Review notes'
+    ]];
+
+    for (const row of pidTableRows) {
+        rows.push([
+            row.pid,
+            row.page,
+            ...PID_TABLE_FIELDS.map(field => row.values[field.key]),
+            row.status,
+            row.flags.join('; ')
+        ]);
+    }
+
+    const csv = rows.map(row => row.map(csvCell).join(',')).join('\r\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${window.currentPDFName || 'pid'}_table_values.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${pidTableRows.length} table row(s)`, 'success');
+}
+
 function updateFooterForVisiblePage() {
     if (!pdfDoc) return;
     
@@ -732,11 +1848,71 @@ function rebuildSidebar() {
         return;
     }
 
-    if (duplicateMode === 'unique') {
-        const groups = createGroupedView(allFoundTags);
-        groups.forEach(g => renderSidebarGroupedItem(g));
-    } else {
-        allFoundTags.forEach(item => renderSidebarOccurrenceItem(item));
+    renderSidebarSheetGroups(allFoundTags);
+}
+
+function renderSidebarSheetGroups(tags) {
+    const sheets = new Map();
+
+    for (const item of tags) {
+        const sheetTitle = item.title || 'Unknown Title';
+        let sheet = sheets.get(sheetTitle);
+        if (!sheet) {
+            sheet = { title: sheetTitle, pages: new Map() };
+            sheets.set(sheetTitle, sheet);
+        }
+
+        let pageTags = sheet.pages.get(item.page);
+        if (!pageTags) {
+            pageTags = [];
+            sheet.pages.set(item.page, pageTags);
+        }
+        pageTags.push(item);
+    }
+
+    const orderedSheets = Array.from(sheets.values()).sort((a, b) => {
+        const aPage = Math.min(...Array.from(a.pages.keys()));
+        const bPage = Math.min(...Array.from(b.pages.keys()));
+        return aPage - bPage || a.title.localeCompare(b.title);
+    });
+
+    for (const sheet of orderedSheets) {
+        const sheetGroup = document.createElement('li');
+        sheetGroup.className = 'sheet-group';
+
+        const totalTags = Array.from(sheet.pages.values())
+            .reduce((count, pageTags) => count + pageTags.length, 0);
+
+        sheetGroup.innerHTML = `
+            <div class="sheet-group-header">
+                <span class="sheet-group-title">${escapeHtml(sheet.title)}</span>
+                <span class="sheet-group-count">${totalTags} tag${totalTags === 1 ? '' : 's'}</span>
+            </div>
+        `;
+
+        const pagesList = document.createElement('div');
+        pagesList.className = 'sheet-pages';
+
+        const orderedPages = Array.from(sheet.pages.entries()).sort(([a], [b]) => a - b);
+        for (const [page, pageTags] of orderedPages) {
+            const pageGroup = document.createElement('section');
+            pageGroup.className = 'sheet-page-group';
+            pageGroup.innerHTML = `<div class="sheet-page-label">Page ${page}</div>`;
+
+            const tagList = document.createElement('ul');
+            tagList.className = 'sheet-tag-list';
+            if (duplicateMode === 'unique') {
+                createGroupedView(pageTags)
+                    .forEach(group => renderSidebarGroupedItem(group, tagList, false));
+            } else {
+                pageTags.forEach(item => renderSidebarOccurrenceItem(item, tagList, false));
+            }
+            pageGroup.appendChild(tagList);
+            pagesList.appendChild(pageGroup);
+        }
+
+        sheetGroup.appendChild(pagesList);
+        resultList.appendChild(sheetGroup);
     }
 }
 
@@ -787,9 +1963,10 @@ function createGroupedView(tags) {
     return groups;
 }
 
-function renderSidebarOccurrenceItem(item) {
+function renderSidebarOccurrenceItem(item, targetList = resultList, showMeta = true) {
     const li = document.createElement('li');
     li.className = 'result-item';
+    li.dataset.tagId = item.id;
 
     const safeTitle = item.title || 'Unknown Title';
     li.innerHTML = `
@@ -802,6 +1979,8 @@ function renderSidebarOccurrenceItem(item) {
             <button class="btn-mini incorrect" title="Reject" onclick="setStatus(event, ${item.id}, 'Incorrect', this)">✗</button>
         </div>
     `;
+
+    if (!showMeta) li.querySelector('.meta')?.remove();
 
     // Apply current status styling
     applyStatusClasses(li, item.status);
@@ -831,10 +2010,10 @@ function renderSidebarOccurrenceItem(item) {
         pageDiv?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
 
-    resultList.appendChild(li);
+    targetList.appendChild(li);
 }
 
-function renderSidebarGroupedItem(group) {
+function renderSidebarGroupedItem(group, targetList = resultList, showMeta = true) {
     const li = document.createElement('li');
     li.className = 'result-item';
 
@@ -852,6 +2031,8 @@ function renderSidebarGroupedItem(group) {
             <button class="btn-mini incorrect" title="Reject all" data-tag="${escapeHtml(group.tag)}">✗</button>
         </div>
     `;
+
+    if (!showMeta) li.querySelector('.meta')?.remove();
 
     // Wire group buttons without fragile inline JS (handles quotes safely)
     li.querySelector('button.correct')?.addEventListener('click', (e) => {
@@ -891,7 +2072,7 @@ function renderSidebarGroupedItem(group) {
         document.getElementById(`page-${first.page}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
 
-    resultList.appendChild(li);
+    targetList.appendChild(li);
 }
 
 function setGroupStatus(e, tagText, newStatus) {
@@ -968,7 +2149,7 @@ function updateStatusUI(id, newStatus) {
     // 1. Update Sidebar Item
     // We need to find the specific LI in the sidebar. 
     // Since we push items in order, index matches ID.
-    const sidebarLi = resultList.children[id];
+    const sidebarLi = resultList.querySelector(`[data-tag-id="${id}"]`);
     if (sidebarLi) updateStatusButtonsForContainer(sidebarLi, newStatus);
 
     // 2. Update Footer Item (if present)
