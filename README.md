@@ -4,11 +4,29 @@ A browser-based engineering tool for auditing **Piping & Instrumentation Diagram
 
 Originally developed for the **Sakarya Gas Field** project, the application has been designed as a **project-agnostic auditing framework** that can be adapted to other engineering projects with different drawing standards, naming conventions, tag formats, and validation requirements.
 
-The tool combines **text-based tag detection**, **line list comparison**, **symbol detection**, and an **interactive review workflow** into a single application. Everything runs locally in the browser—no installation, backend server, or database is required.
+The tool combines **text-based tag detection**, **line list comparison**, **local line tracing**, and an **interactive review workflow** into a single application. Everything runs locally in the browser—no installation or backend server is required.
 
 ---
 
 # Features
+
+## 🗂️ Local Projects and Files
+
+Projects can be created and kept locally in the browser. Each project can contain multiple P&ID PDFs, which remain available after a page refresh.
+
+For users who want normal file-folder control, a project can also be connected to a folder on the computer. The application creates this structure automatically:
+
+```
+Project name/
+├── 01_P&ID        # Source PDF drawings
+├── 02_Line Lists  # CSV line lists
+├── 03_Reports     # Audit and table reports
+└── 04_Exports     # Annotated PDFs and other exports
+```
+
+The folder connection uses the browser's local file access and does not upload files to a server. Browser support for the File System Access API is required for writing directly to the selected folder; the browser library remains available as a fallback.
+
+---
 
 ## 📄 PDF Viewer
 
@@ -82,6 +100,28 @@ Each detected tag becomes:
 
 ---
 
+## Local Line Tracing and Valve Register
+
+After the normal text audit, Pipe Tracing can build a page-local topology from the stroked vector geometry already present in the PDF. No drawing data is sent to an external service.
+
+The tracing policy is deliberately auditable:
+
+- Start from nearby pipe geometry that is aligned with the selected line tag, rather than blindly choosing the closest stroke
+- Continue through connected straight and curved pipe segments
+- Reject reverse turns that would enter and double back through symbol outlines
+- Bridge only short, collinear CAD gaps whose ends face each other
+- Pass a tee only when there is one clearly aligned main continuation
+- Probe clear side/main runs for another line tag so a tee can be classified as a line boundary
+- Pass compact inline geometry only when closed/curved symbol evidence supports it
+- Pass a clear aligned crossing, but mark competing, unresolved branch, same-line branch, complex-junction, and route-overlap cases as `REVIEW`
+- Keep filtered geometry, candidate edges, node decisions, stop reasons, and valve candidates available in the debug inspector
+
+Every detected manual or actuated valve tag is kept in the valve register, including valves that cannot be linked. A valve is marked `LINKED` only after every detected line occurrence on that page has a completed route and one distinct traced line is supported by proximity, tag direction, and matching nominal size. Incomplete page coverage, close competing lines, low-confidence proximity, or a reviewed line route are marked `REVIEW`; valves without a nearby compatible route remain `UNLINKED`. Provisional untagged side branches can suggest a candidate but cannot silently create an automatic link. When all repeated occurrences have been checked, duplicate routes with the same normalized line number do not create a false valve ambiguity.
+
+The copied line/valve report and audit CSV include trace status, linked line, confidence, association method, candidate lines, linked valves, and reviewer comments.
+
+---
+
 ## 🔄 Duplicate Handling
 
 Repeated tags can be processed in two different ways.
@@ -146,9 +186,8 @@ Review status updates instantly throughout the application.
 
 The application can compare detected P&ID tags against external engineering Line Lists.
 
-Supported formats:
+Supported format:
 
-- Excel (.xlsx)
 - CSV
 
 Comparison capabilities include:
@@ -160,42 +199,9 @@ Comparison capabilities include:
 - Side-by-side inspection
 - Interactive comparison drawer
 - Direct navigation from comparison results to drawing locations
-- Excel report export
+- CSV report export
 
 This enables rapid validation between engineering databases and P&ID documentation.
-
----
-
-# Symbol Detection (Experimental)
-
-In addition to text recognition, the application supports template-based symbol detection.
-
-Using **OpenCV.js**, symbols can be detected directly from drawing graphics.
-
-Features include:
-
-- Template matching
-- Capture new symbol templates from drawings
-- Detection progress indicator
-- Symbol detection report
-- Symbol location navigation
-- Support for predefined symbol libraries
-
-Current library includes multiple valve types, including:
-
-- Ball Valve
-- Butterfly Valve
-- Gate Valve
-- Globe Valve
-- Knife Gate Valve
-- Plug Valve
-- Needle Valve
-- Diaphragm Valve
-- Shut-off Valve
-
-Both open and closed variants are supported where available.
-
-Additional symbol templates can easily be added.
 
 ---
 
@@ -212,9 +218,9 @@ Export detected tags including:
 
 ---
 
-## Excel Export
+## Line List Comparison CSV Export
 
-Export Line List comparison results into an Excel workbook.
+Export Line List comparison results into a CSV file.
 
 ---
 
@@ -249,7 +255,6 @@ The following can be customized:
 - Equipment tag formats
 - Drawing number extraction logic
 - Project naming conventions
-- Symbol libraries
 - Line List column mappings
 - Validation rules
 - Export formats
@@ -335,11 +340,11 @@ http://localhost:8000
 5. Run the scan.
 6. Review detected tags.
 7. Mark each tag as Correct or Incorrect.
-8. (Optional) Load an Excel or CSV Line List for comparison.
-9. (Optional) Run Symbol Detection.
+8. (Optional) Enable Pipe Tracing, check one line or all lines, and review line/valve results.
+9. (Optional) Load a CSV Line List for comparison.
 10. Export:
     - CSV
-    - Excel Comparison Report
+    - Line List Comparison CSV
     - Annotated PDF
 
 ---
@@ -356,15 +361,9 @@ http://localhost:8000
 ├── js
 │   ├── script.js
 │   ├── print-service.js
-│   ├── symbol-detector.js
-│   ├── symbol-library.js
-│   ├── predefined-symbols.js
 │   ├── pdf.min.js
 │   ├── pdf.worker.min.js
 │   └── pdf-lib.min.js
-│
-├── symbols
-│   └── Template symbol library
 │
 └── loading
     └── Loading screen assets
@@ -379,8 +378,6 @@ http://localhost:8000
 - Vanilla JavaScript
 - PDF.js
 - pdf-lib
-- OpenCV.js
-- SheetJS (XLSX)
 
 ---
 
@@ -388,8 +385,10 @@ http://localhost:8000
 
 - Tag detection depends on searchable PDF text.
 - Scanned drawings require OCR before processing.
-- Symbol detection is template-based and performs best with consistent symbol scale and drawing quality.
 - Highlight positioning may vary slightly depending on PDF fonts, transformations, and text metrics.
+- Line tracing requires stroked vector geometry and is page-local; raster/scanned pipework cannot be traced without a separate image/OCR workflow.
+- Valve-to-line association starts from detected valve tag text; untagged or ambiguous valves require manual review.
+- Ambiguous topology is intentionally reported for review instead of being assigned silently.
 
 ---
 
@@ -401,8 +400,6 @@ Potential future improvements include:
 - Project configuration profiles
 - Batch processing of multiple PDFs
 - OCR integration
-- Additional symbol libraries
-- AI-assisted symbol recognition
 - Advanced reporting and dashboards
 - Custom engineering validation rules
 - Equipment and instrument tag validation
@@ -416,8 +413,6 @@ The application combines multiple open-source libraries:
 
 - **PDF.js** for PDF rendering and text extraction
 - **pdf-lib** for annotated PDF generation
-- **OpenCV.js** for image-based symbol detection
-- **SheetJS** for Excel import/export
 - **Vanilla JavaScript** for a lightweight, dependency-free frontend
 
 ---
@@ -426,6 +421,6 @@ The application combines multiple open-source libraries:
 
 P&ID Auditor is a lightweight engineering review tool developed to simplify the auditing and validation of Piping & Instrumentation Diagrams.
 
-While originally created for the Sakarya Gas Field project, the application has evolved into a reusable framework that can be adapted to different engineering projects with minimal effort by configuring project-specific tag formats, drawing extraction rules, symbol libraries, and validation workflows.
+While originally created for the Sakarya Gas Field project, the application has evolved into a reusable framework that can be adapted to different engineering projects with minimal effort by configuring project-specific tag formats, drawing extraction rules, and validation workflows.
 
 Its modular architecture makes it suitable as a foundation for future P&ID auditing and engineering quality assurance tools across a wide range of industries.

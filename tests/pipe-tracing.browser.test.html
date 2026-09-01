@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pipe tracing browser verification</title>
+    <style>
+        body { font: 15px/1.45 system-ui, sans-serif; margin: 32px; color: #172033; background: #f5f7fb; }
+        main { max-width: 920px; margin: auto; padding: 24px; background: white; border-radius: 14px; box-shadow: 0 8px 30px #15223a18; }
+        h1 { margin-top: 0; }
+        #summary { font-weight: 700; padding: 12px; border-radius: 8px; }
+        #summary.pass { color: #12643a; background: #e7f7ed; }
+        #summary.fail { color: #8a1c1c; background: #fdeaea; }
+        li { margin: 8px 0; padding: 8px 10px; border-left: 4px solid #1d8f55; background: #f4fbf7; }
+        li.fail { border-color: #c43b3b; background: #fff4f4; }
+        code { font-size: 0.92em; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Pipe tracing browser verification</h1>
+    <p>Runs the production tracing functions in the browser against deterministic P&amp;ID topology cases.</p>
+    <div id="summary">Running…</div>
+    <ol id="results"></ol>
+</main>
+<div id="pipe-tracing-progress" hidden>
+    <span id="pipe-tracing-progress-label"></span>
+    <progress id="pipe-tracing-progress-bar" max="1" value="0"></progress>
+</div>
+<script>
+    window.__PIPE_TRACING_TEST__ = true;
+    window.pdfjsLib = {
+        OPS: {},
+        Util: {
+            transform(left, right) {
+                return [
+                    left[0] * right[0] + left[2] * right[1],
+                    left[1] * right[0] + left[3] * right[1],
+                    left[0] * right[2] + left[2] * right[3],
+                    left[1] * right[2] + left[3] * right[3],
+                    left[0] * right[4] + left[2] * right[5] + left[4],
+                    left[1] * right[4] + left[3] * right[5] + left[5]
+                ];
+            }
+        }
+    };
+</script>
+<script src="../js/pipe-tracing.js?v=20260901-progress-1"></script>
+<script>
+(() => {
+    'use strict';
+
+    const tracing = window.PipeTracing.__test;
+    const tests = [];
+    const results = [];
+    const test = (name, run) => tests.push({ name, run });
+    const assert = (condition, message) => {
+        if (!condition) throw new Error(message || 'Assertion failed');
+    };
+    const equal = (actual, expected, message) => {
+        if (actual !== expected) throw new Error(message || `Expected ${expected}, got ${actual}`);
+    };
+    const sameNumbers = (actual, expected, message) => {
+        const left = Array.from(actual).sort((a, b) => a - b).join(',');
+        const right = Array.from(expected).sort((a, b) => a - b).join(',');
+        if (left !== right) throw new Error(message || `Expected [${right}], got [${left}]`);
+    };
+
+    function makeGeometry(points, edgePairs) {
+        const nodes = points.map((point, id) => ({ id, point, edges: [] }));
+        const edges = edgePairs.map(([a, b], id) => ({
+            id,
+            a,
+            b,
+            length: Math.hypot(points[b][0] - points[a][0], points[b][1] - points[a][1]),
+            strokeWidth: 1,
+            kind: 'pipe-segment',
+            geometryType: 'raw-stroke',
+            sourcePath: id,
+            sourceLength: Math.hypot(points[b][0] - points[a][0], points[b][1] - points[a][1]),
+            sourcePathClosed: false,
+            sourcePathHasCurves: false,
+            sourcePathPerimeter: 0,
+            sourcePathMaxDimension: 100,
+            sourcePathSegmentCount: 1
+        }));
+        const adjacency = nodes.map(() => []);
+        edges.forEach(edge => {
+            adjacency[edge.a].push(edge.id);
+            adjacency[edge.b].push(edge.id);
+            nodes[edge.a].edges.push(edge.id);
+            nodes[edge.b].edges.push(edge.id);
+        });
+        return {
+            nodes,
+            edges,
+            adjacency,
+            bridges: [],
+            bridgeTolerance: 12,
+            typicalWidth: 1,
+            snapTolerance: 1.5,
+            pageBounds: { minX: -100, minY: -100, maxX: 250, maxY: 250 }
+        };
+    }
+
+    function makeRoute(tagText, tagId, geometry, edgeIds = [0], baseStatus = 'yes') {
+        return {
+            tagText,
+            tagId,
+            page: 1,
+            edgeIds,
+            associationEdgeIds: edgeIds,
+            routeLength: edgeIds.reduce((sum, edgeId) => sum + geometry.edges[edgeId].length, 0),
+            baseStatus,
+            overlaps: [],
+            geometry
+        };
+    }
+
+    function makeValve(id, tag, x, y, rotation = 0) {
+        return {
+            id,
+            tag,
+            tagType: 'valve',
+            page: 1,
+            pdfRect: { x: x - 10, y: y - 5, width: 20, height: 10, rotation }
+        };
+    }
+
+    test('Enabling tracing starts the full line check automatically', () => {
+        const page = {
+            view: [0, 0, 100, 100],
+            getViewport: () => ({
+                width: 200,
+                height: 200,
+                transform: [1, 0, 0, 1, 0, 0],
+                convertToViewportPoint: (x, y) => [x, y]
+            }),
+            getOperatorList: async () => ({ fnArray: [], argsArray: [] }),
+            getTextContent: async () => ({ items: [] })
+        };
+        const pdf = { getPage: async () => page };
+        const line = {
+            id: 9001,
+            tag: '35-2"-LM-A01C1-5518-PP',
+            tagType: 'line',
+            page: 1,
+            pdfRect: { x: 10, y: 10, width: 30, height: 8, rotation: 0 }
+        };
+
+        window.PipeTracing.setDocumentReady(pdf, [line]);
+        tracing.setEnabled(true);
+        assert(window.PipeTracing.state.batchRunning, 'Enabling tracing should start the line batch.');
+        equal(window.PipeTracing.state.batchTotal, 1, 'The progress total should match detected lines.');
+        assert(!document.getElementById('pipe-tracing-progress').hidden, 'The progress bar should be visible.');
+        equal(document.getElementById('pipe-tracing-progress-label').textContent, 'Checking 0/1');
+        tracing.setEnabled(false);
+        assert(document.getElementById('pipe-tracing-progress').hidden, 'Disabling tracing should hide progress.');
+    });
+
+    test('Line seed follows tag direction instead of a closer crossing stroke', () => {
+        const geometry = makeGeometry(
+            [[50, -30], [50, 30], [0, 12], [100, 12]],
+            [[0, 1], [2, 3]]
+        );
+        const seed = tracing.findSeedEdges(geometry, {
+            tag: '10-2"-HC-AAAA-1111-A',
+            pdfRect: { x: 40, y: -5, width: 20, height: 10, rotation: 0 }
+        });
+        equal(seed.selected.edge.id, 1);
+        equal(seed.selected.alignment, 1);
+    });
+
+    test('Vertical tags use their rotated PDF rectangle for the seed position', () => {
+        const geometry = makeGeometry(
+            [[45, -20], [45, 120], [100, -20], [100, 120]],
+            [[0, 1], [2, 3]]
+        );
+        const seed = tracing.findSeedEdges(geometry, {
+            tag: '10-2"-HC-AAAA-1111-A',
+            pdfRect: { x: 50, y: 0, width: 100, height: 10, rotation: 90 }
+        });
+        equal(seed.selected.edge.id, 0);
+        equal(seed.selected.alignment, 1);
+    });
+
+    test('A tee with one aligned main continuation passes the main run', () => {
+        const geometry = makeGeometry(
+            [[0, 0], [50, 0], [100, 0], [50, 45]],
+            [[0, 1], [1, 2], [1, 3]]
+        );
+        const component = tracing.traceContinuation(geometry, geometry.edges[0]);
+        sameNumbers(component.edgeIds, [0, 1]);
+        equal(component.teeJunctions[0].stopped, false);
+        assert(component.decisionRecords.some(record => record.action === 'pass-tee-main'));
+    });
+
+    test('A tee with competing continuations stops instead of guessing', () => {
+        const geometry = makeGeometry(
+            [[50, -50], [50, 0], [0, 0], [100, 0]],
+            [[0, 1], [1, 2], [1, 3]]
+        );
+        const component = tracing.traceContinuation(geometry, geometry.edges[0]);
+        sameNumbers(component.edgeIds, [0]);
+        equal(component.teeJunctions[0].stopped, true);
+    });
+
+    test('A straight pipe passes a short diagonal inline-symbol stroke', () => {
+        const geometry = makeGeometry(
+            [[0, 0], [50, 0], [100, 0], [58, 5.2]],
+            [[0, 1], [1, 2], [1, 3]]
+        );
+        geometry.edges[1].geometryType = 'thin-rectangle-centerline';
+        geometry.edges[2].sourceLength = geometry.edges[2].length;
+        geometry.edges[2].sourcePathMaxDimension = geometry.edges[2].length;
+        const component = tracing.traceContinuation(geometry, geometry.edges[0]);
+        sameNumbers(component.edgeIds, [0, 1]);
+        assert(component.decisionRecords.some(record =>
+            record.action === 'pass-tee-main' &&
+            record.reason === 'straight pipe continuation past short symbol stroke'));
+    });
+
+    test('The route cannot reverse into symbol geometry', () => {
+        const geometry = makeGeometry(
+            [[0, 0], [50, 0], [30, 20]],
+            [[0, 1], [1, 2]]
+        );
+        const component = tracing.traceContinuation(geometry, geometry.edges[0]);
+        sameNumbers(component.edgeIds, [0]);
+        assert(component.stops.some(stop => stop.reason === 'no-valid-continuation'));
+    });
+
+    test('A different line-tag anchor stops a route before line numbers merge', () => {
+        const geometry = makeGeometry(
+            [[0, 0], [50, 0], [100, 0]],
+            [[0, 1], [1, 2]]
+        );
+        const component = tracing.traceContinuation(geometry, geometry.edges[0], {
+            lineAnchors: [{
+                tagId: 2,
+                tagText: '10-2"-HC-BBBB-2222-A',
+                edgeId: 1,
+                distance: 3
+            }]
+        });
+        sameNumbers(component.edgeIds, [0]);
+        assert(component.stops.some(stop => stop.reason === 'foreign-line-boundary'));
+        equal(component.lineBoundaries[0].connectedLineTags[0].tag, '10-2"-HC-BBBB-2222-A');
+    });
+
+    test('A tee stops when a different line tag is found shortly beyond its main continuation', () => {
+        const geometry = makeGeometry(
+            [[0, 0], [50, 0], [100, 0], [150, 0], [50, 45]],
+            [[0, 1], [1, 2], [2, 3], [1, 4]]
+        );
+        const component = tracing.traceContinuation(geometry, geometry.edges[0], {
+            lineAnchors: [{
+                tagId: 2,
+                tagText: '10-2"-HC-BBBB-2222-A',
+                edgeId: 2,
+                distance: 3
+            }]
+        });
+        sameNumbers(component.edgeIds, [0]);
+        equal(component.lineBoundaries.length, 1);
+        equal(component.lineBoundaries[0].nodeId, 1);
+        equal(component.lineBoundaries[0].connectedLineTags[0].tag, '10-2"-HC-BBBB-2222-A');
+        assert(component.decisionRecords.some(record => record.action === 'stop-foreign-line-boundary'));
+    });
+
+    test('A clear aligned crossing does not force REVIEW', () => {
+        const component = {
+            teeJunctions: [],
+            crossings: [{ stopped: false, reason: 'aligned-continuation' }],
+            ambiguousNodes: [],
+            routeOverlaps: [],
+            stops: [{ reason: 'endpoint' }]
+        };
+        equal(tracing.traceNeedsReview(component, { tag: '10-2"-HC-AAAA-1111-A' }), false);
+    });
+
+    test('A stopped tee is accepted only when another line tag proves the boundary', () => {
+        const component = {
+            teeJunctions: [{ stopped: true, connectedLineTags: [{ tag: '10-2"-HC-BBBB-2222-A' }] }],
+            crossings: [],
+            ambiguousNodes: [],
+            routeOverlaps: [],
+            stops: [{ reason: 'tee-junction' }]
+        };
+        equal(tracing.traceNeedsReview(component, { tag: '10-2"-HC-AAAA-1111-A' }), false);
+        component.teeJunctions[0].connectedLineTags = [];
+        equal(tracing.traceNeedsReview(component, { tag: '10-2"-HC-AAAA-1111-A' }), true);
+    });
+
+    test('Valve direction rejects a closer perpendicular line', () => {
+        const horizontalGeometry = makeGeometry([[0, 15], [100, 15]], [[0, 1]]);
+        const verticalGeometry = makeGeometry([[50, -100], [50, 100]], [[0, 1]]);
+        const horizontal = makeRoute('10-2"-HC-AAAA-1111-A', 1, horizontalGeometry);
+        const vertical = makeRoute('10-2"-HC-BBBB-2222-A', 2, verticalGeometry);
+        const valve = makeValve(20, '10-2"-A1R-9020', 50, 0, 0);
+        const association = tracing.associateValvesAcrossRoutes([valve], [vertical, horizontal])[0];
+        equal(association.status, 'assigned');
+        equal(association.lineTag, horizontal.tagText);
+        equal(association.candidates.find(candidate => candidate.lineTag === vertical.tagText).eligible, false);
+    });
+
+    test('Valve nominal size must match the line nominal size', () => {
+        const geometry = makeGeometry([[0, 0], [100, 0]], [[0, 1]]);
+        const route = makeRoute('10-2"-HC-AAAA-1111-A', 1, geometry);
+        const valve = makeValve(21, '10-4"-A1R-9021', 50, 0, 0);
+        const association = tracing.associateValvesAcrossRoutes([valve], [route])[0];
+        equal(association.status, 'unassigned');
+        equal(association.candidates[0].sizeCompatible, false);
+    });
+
+    test('Duplicate occurrences of one normalized line do not create ambiguity', () => {
+        const firstGeometry = makeGeometry([[0, 0], [100, 0]], [[0, 1]]);
+        const secondGeometry = makeGeometry([[0, 2], [100, 2]], [[0, 1]]);
+        const routes = [
+            makeRoute('10-2"-HC-AAAA-1111-A', 1, firstGeometry),
+            makeRoute('10-2"-HC-AAAA-1111-A', 2, secondGeometry)
+        ];
+        const valve = makeValve(22, '10-2"-A1R-9022', 50, 3, 0);
+        const association = tracing.associateValvesAcrossRoutes([valve], routes)[0];
+        equal(association.status, 'assigned');
+        equal(association.candidates.length, 1);
+        sameNumbers(association.candidates[0].lineOccurrenceIds, [1, 2]);
+    });
+
+    test('Valve stays REVIEW until every detected line occurrence has a route', () => {
+        const geometry = makeGeometry([[0, 0], [100, 0]], [[0, 1]]);
+        const route = makeRoute('10-2"-HC-AAAA-1111-A', 1, geometry);
+        const valve = makeValve(23, '10-2"-A1R-9023', 50, 3, 0);
+        const tags = [
+            valve,
+            { id: 1, tag: route.tagText, tagType: 'line', page: 1 },
+            { id: 2, tag: '10-2"-HC-BBBB-2222-A', tagType: 'line', page: 1 }
+        ];
+        const association = tracing.associateValvesAcrossRoutes(tags, [route])[0];
+        equal(association.status, 'review');
+        equal(association.reason, 'not-all-detected-lines-on-page-have-a-route');
+    });
+
+    for (const entry of tests) {
+        try {
+            entry.run();
+            results.push({ name: entry.name, passed: true });
+        } catch (error) {
+            results.push({ name: entry.name, passed: false, error: error.message });
+        }
+    }
+
+    const list = document.getElementById('results');
+    for (const result of results) {
+        const item = document.createElement('li');
+        item.className = result.passed ? '' : 'fail';
+        item.textContent = `${result.passed ? 'PASS' : 'FAIL'} — ${result.name}${result.error ? `: ${result.error}` : ''}`;
+        list.appendChild(item);
+    }
+    const passed = results.filter(result => result.passed).length;
+    const summary = document.getElementById('summary');
+    summary.className = passed === results.length ? 'pass' : 'fail';
+    summary.textContent = `${passed}/${results.length} browser tests passed`;
+    window.__PIPE_TRACING_BROWSER_RESULTS__ = results;
+})();
+</script>
+</body>
+</html>

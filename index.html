@@ -11,74 +11,164 @@
     <!-- Local PDF-Lib Library for editing PDFs -->
     <script src="js/pdf-lib.min.js"></script>
 
-    <!-- Local SheetJS for Excel/CSV line list compare -->
-    <script src="js/xlsx.full.min.js"></script>
-
     <!-- Local CSS -->
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/styles.css?v=20260901-project-files-nested-progress-show-all-link-clarity-valve-width-1">
 </head>
 <body class="results-sidebar-collapsed">
 
+    <!-- Compact tool rail: the search panel is an overlay and never owns layout width. -->
+    <nav id="tool-rail" aria-label="Tool navigation">
+        <button id="tool-rail-projects-btn" class="tool-rail__button" type="button"
+            onclick="setSidebarView('projects', 'tool-rail-projects-btn')" aria-controls="sidebar" aria-expanded="true"
+            aria-pressed="true" title="Projects and files">
+            <svg class="tool-rail__svg" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3.5 6.5h6l1.7 2H20.5v9.5a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5v-11.5a1.5 1.5 0 0 1 1.5-1.5Z"></path>
+            </svg>
+            <span class="sr-only">Projects and files</span>
+        </button>
+
+        <button id="tool-rail-search-btn" class="tool-rail__button" type="button"
+            onclick="setSidebarView('search', 'tool-rail-search-btn')" aria-controls="sidebar" aria-expanded="false"
+            aria-pressed="false" title="Search tools">
+            <svg class="tool-rail__svg" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10.3" cy="10.3" r="5.5"></circle>
+                <path d="m14.4 14.4 4.4 4.4"></path>
+            </svg>
+            <span class="sr-only">Search tools</span>
+        </button>
+
+        <span class="tool-rail__divider" aria-hidden="true"></span>
+
+        <button id="tool-rail-compare-btn" class="tool-rail__button" type="button"
+            onclick="setSidebarView('compare', 'tool-rail-compare-btn')" aria-controls="sidebar"
+            aria-expanded="false" aria-pressed="false" title="Line list compare">
+            <img class="tool-rail__icon" src="Images/rail-icons/compare-rail-optimized.png" alt="" aria-hidden="true">
+            <span class="sr-only">Line list compare</span>
+        </button>
+
+        <button id="tool-rail-table-btn" class="tool-rail__button" type="button"
+            onclick="setSidebarView('table', 'tool-rail-table-btn')" aria-controls="sidebar"
+            aria-expanded="false" aria-pressed="false" title="P&amp;ID table extraction">
+            <img class="tool-rail__icon" src="Images/rail-icons/table-extraction-imagegen-v2-optimized.png" alt="" aria-hidden="true">
+            <span class="sr-only">P&amp;ID table extraction</span>
+        </button>
+
+        <button id="tool-rail-pipe-btn" class="tool-rail__button" type="button"
+            onclick="setSidebarView('pipe', 'tool-rail-pipe-btn')" aria-controls="sidebar"
+            aria-expanded="false" aria-pressed="false" title="Pipe tracing">
+            <svg class="tool-rail__svg" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 5.5h4a3.5 3.5 0 0 1 3.5 3.5v2a3.5 3.5 0 0 0 3.5 3.5H19"></path>
+                <circle cx="5" cy="5.5" r="1.5"></circle>
+                <path d="m17 11.5 2 3-2 3"></path>
+            </svg>
+            <span class="sr-only">Pipe tracing</span>
+        </button>
+
+        <span class="tool-rail__divider tool-rail__divider--results" aria-hidden="true"></span>
+
+        <div class="tool-rail__group tool-rail__group--results" role="group" aria-label="Results panels">
+            <button id="tool-rail-found-tags-btn" class="tool-rail__button tool-rail__button--results" type="button"
+                onclick="setResultsRailView('tags', 'tool-rail-found-tags-btn')" aria-controls="results-sidebar"
+                aria-expanded="false" aria-pressed="false" title="Found tags">
+                <img class="tool-rail__icon" src="Images/rail-icons/found-tags-imagegen-optimized.png" alt="" aria-hidden="true">
+                <span class="sr-only">Found tags</span>
+            </button>
+
+            <button id="tool-rail-lists-btn" class="tool-rail__button tool-rail__button--results" type="button"
+                onclick="setResultsRailView('valves', 'tool-rail-lists-btn')" aria-controls="results-sidebar"
+                aria-expanded="false" aria-pressed="false" aria-disabled="true" disabled title="Valve–line connections">
+                <svg class="tool-rail__svg" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7 5h12M7 12h12M7 19h12"></path>
+                    <circle cx="4" cy="5" r="0.8"></circle>
+                    <circle cx="4" cy="12" r="0.8"></circle>
+                    <circle cx="4" cy="19" r="0.8"></circle>
+                </svg>
+                <span class="sr-only">Valve–line connections</span>
+            </button>
+        </div>
+    </nav>
+
     <!-- Sidebar -->
-    <div id="sidebar">
+    <aside id="sidebar" role="dialog" aria-label="Projects and files" aria-hidden="false" data-tool-view="projects">
         <div class="sidebar-header">
             <div class="header-top">
-                <h1>P&amp;ID Auditor - Sakarya</h1>
-                <button id="close-sidebar-btn" class="btn-icon" onclick="toggleSidebar()" title="Close Sidebar">✕</button>
+                <div class="sidebar-title-group">
+                    <span class="sidebar-product-name">P&amp;ID Auditor - Sakarya</span>
+                    <h1 id="sidebar-view-title">Projects and files</h1>
+                </div>
+                <button id="close-sidebar-btn" class="btn-icon" onclick="toggleSidebar()" title="Close search tools" aria-label="Close search tools">✕</button>
             </div>
             
             <div class="sidebar-sections">
-                <section class="sidebar-section">
+                <section class="sidebar-section" data-sidebar-view="projects">
                     <div class="section-header">
                         <div class="section-title">Projects</div>
                     </div>
-                    <ul class="project-menu" aria-label="Projects">
-                        <li class="project-menu__item project-menu__item--active">SAK 3</li>
-                        <li class="project-menu__item">Valhall</li>
-                        <li class="project-menu__item">Katlan</li>
-                        <li class="project-menu__item">Tangkulo</li>
-                    </ul>
+                    <ul id="project-menu" class="project-menu" aria-label="Projects"></ul>
+                    <div class="project-folder-panel">
+                        <div class="project-folder-panel__heading">
+                            <span>Project folder</span>
+                            <span class="badge-beta">LOCAL</span>
+                        </div>
+                        <div id="project-folder-status" class="project-folder-status" role="status">
+                        No main folder selected. Choose or create one to show project files.
+                        </div>
+                        <div class="project-folder-actions">
+                            <button id="create-project-folder-btn" class="btn btn-secondary" type="button">Create folder</button>
+                            <button id="connect-project-folder-btn" class="btn btn-secondary" type="button">Use existing</button>
+                            <button id="disconnect-project-folder-btn" class="btn-toggle" type="button" hidden>Disconnect</button>
+                        </div>
+                        <button id="use-browser-project-btn" class="project-folder-fallback" type="button" hidden>Use browser library</button>
+                        <div id="project-folder-help" class="project-folder-help" hidden>Select a folder to view its files.</div>
+                        <div id="project-folder-tree" class="project-folder-tree" aria-label="Project folder structure" hidden>
+                            <button type="button" class="project-folder-row project-folder-row--active" data-project-folder="01_P&amp;ID" aria-pressed="true" aria-expanded="true"><span>📁 01_P&amp;ID</span><small>PDF drawings</small></button>
+                            <div id="project-files" class="project-files" hidden></div>
+                            <button type="button" class="project-folder-row" data-project-folder="02_Line Lists" aria-pressed="false" aria-expanded="false"><span>📁 02_Line Lists</span><small>CSV source files</small></button>
+                            <button type="button" class="project-folder-row" data-project-folder="03_Reports" aria-pressed="false" aria-expanded="false"><span>📁 03_Reports</span><small>Audit and table reports</small></button>
+                            <button type="button" class="project-folder-row" data-project-folder="04_Exports" aria-pressed="false" aria-expanded="false"><span>📁 04_Exports</span><small>Annotated PDFs and other exports</small></button>
+                        </div>
+                    </div>
                 </section>
 
-                <section class="sidebar-section">
+                <section class="sidebar-section search-options-section" data-sidebar-view="search compare">
                     <div class="section-header">
                         <div class="section-title">Search options</div>
                     </div>
 
-                    <div class="form-block">
-                        <div class="field-label">Mode</div>
-                        <div class="radio-group">
-                            <label class="radio-label"><input type="checkbox" name="searchMode" value="line" checked> Line tags</label>
-                            <label class="radio-label"><input type="checkbox" name="searchMode" value="valve"> Valve tags</label>
-                            <label class="radio-label"><input type="checkbox" name="searchMode" value="actuated"> Actuated valves</label>
+                    <div class="search-options-menu" aria-label="Search options">
+                        <div class="search-options-group">
+                            <div class="search-options-group__label">Mode</div>
+                            <div class="search-options-list">
+                                <label class="search-option-item"><input type="checkbox" name="searchMode" value="line" checked> Line tags</label>
+                                <label class="search-option-item"><input type="checkbox" name="searchMode" value="valve" checked> Valve tags</label>
+                                <label class="search-option-item"><input type="checkbox" name="searchMode" value="actuated" checked> Actuated valves</label>
+                            </div>
+                        </div>
+
+                        <div class="search-options-group">
+                            <div class="search-options-group__label">Duplicates</div>
+                            <div class="search-options-list">
+                                <label class="search-option-item"><input type="radio" name="dupMode" value="occurrences" checked> Count all</label>
+                                <label class="search-option-item"><input type="radio" name="dupMode" value="unique"> Combine</label>
+                            </div>
+                        </div>
+
+                        <div class="search-options-group search-options-group--file">
+                            <div class="search-options-group__label">PDF</div>
+                            <div class="file-input-wrapper">
+                                <label for="fileInput" class="file-label">Choose a PDF</label>
+                                <input type="file" id="fileInput" accept="application/pdf">
+                            </div>
+                        </div>
+
+                        <div id="search-action" class="search-options-action" hidden>
+                            <button id="search-btn" class="btn btn-primary btn-search-run" onclick="runSearch()">
+                                Search and Find!
+                            </button>
                         </div>
                     </div>
 
-                    <div class="form-block">
-                        <div class="field-label">Duplicates</div>
-                        <div class="radio-group" style="margin-bottom: 0;">
-                            <label class="radio-label"><input type="radio" name="dupMode" value="occurrences" checked> Count all</label>
-                            <label class="radio-label"><input type="radio" name="dupMode" value="unique"> Combine</label>
-                        </div>
-                    </div>
-
-                    <div class="form-block">
-                        <div class="field-label">PDF</div>
-                        <div class="file-input-wrapper">
-                            <label for="fileInput" class="file-label">
-                                <span id="fileName">New Document.pdf</span>
-                            </label>
-                            <input type="file" id="fileInput" accept="application/pdf" onchange="updateFileName(this)">
-                        </div>
-                    </div>
-
-                    <div class="form-block">
-                        <button id="search-btn" class="btn btn-primary btn-search-run" onclick="runSearch()">
-                            Search and Find!
-                        </button>
-                    </div>
-
-                    <div class="form-block">
+                    <div class="search-options-compare">
                         <div class="section-header line-list-header">
                             <div class="field-label">Compare with another Line List</div>
                             <button id="toggle-line-list-btn" class="btn-toggle" onclick="toggleLineListTools()" aria-controls="line-list-tools" aria-expanded="false">Show</button>
@@ -91,7 +181,7 @@
                                 <label for="lineListInput" class="file-label">
                                     <span id="lineListFileName">No line list selected</span>
                                 </label>
-                                <input type="file" id="lineListInput" accept=".xlsx,.xls,.csv" onchange="updateLineListFileName(this)">
+                                <input type="file" id="lineListInput" accept=".csv,text/csv" onchange="updateLineListFileName(this)">
                             </div>
                         </div>
 
@@ -99,78 +189,122 @@
                             <button id="open-compare-btn" class="btn btn-compare" onclick="openLineListCompareModal()">
                                 Open Line List Compare
                             </button>
-                            <button id="export-line-list-btn" class="btn btn-secondary line-list-action-btn" onclick="exportLineListCompareToXlsx()">
-                                Export Line List XLSX
+                            <button id="export-line-list-btn" class="btn btn-secondary line-list-action-btn" onclick="exportLineListCompareToCsv()">
+                                Export Line List CSV
                             </button>
                         </div>
                     </div>
                 </section>
 
-                <section class="sidebar-section pid-table-extraction-section">
+                <section class="sidebar-section pid-table-extraction-section" data-sidebar-view="table">
                     <div class="section-header">
                         <div class="section-title">P&amp;ID Table Extraction</div>
-                        <span class="badge-beta">LOCAL</span>
+                        <div class="section-header-actions">
+                            <span class="badge-beta">LOCAL</span>
+                            <button id="toggle-pid-table-extraction-btn" class="btn-toggle" type="button" onclick="toggleSidebarSection('pid-table-extraction-tools', 'toggle-pid-table-extraction-btn')" aria-controls="pid-table-extraction-tools" aria-expanded="false">Show</button>
+                        </div>
                     </div>
-                    <div class="pid-table-help">
-                        Read searchable P&amp;ID table rows for item tags and engineering attributes. Matching labels and values share a color.
-                    </div>
-                    <div class="form-block">
-                        <button id="extract-pid-tables-btn" class="btn btn-compare" type="button" disabled>
-                            Extract P&amp;ID Tables
-                        </button>
-                        <button id="export-pid-tables-btn" class="btn btn-secondary line-list-action-btn" type="button" disabled>
-                            Export Table CSV
-                        </button>
-                    </div>
-                    <div id="pid-table-extraction-status" class="pid-table-extraction-status" role="status">
-                        Load a P&amp;ID before extracting table values.
+                    <div id="pid-table-extraction-tools" class="sidebar-section-tools collapsed">
+                        <div class="pid-table-help">
+                            Read searchable P&amp;ID table rows for item tags and engineering attributes. Matching labels and values share a color.
+                        </div>
+                        <div class="form-block">
+                            <button id="extract-pid-tables-btn" class="btn btn-compare" type="button" disabled>
+                                Extract P&amp;ID Tables
+                            </button>
+                            <button id="export-pid-tables-btn" class="btn btn-secondary line-list-action-btn" type="button" disabled>
+                                Export Table CSV
+                            </button>
+                        </div>
+                        <div id="pid-table-extraction-status" class="pid-table-extraction-status" role="status">
+                            Load a P&amp;ID before extracting table values.
+                        </div>
                     </div>
                 </section>
 
-                <!-- Symbol Detection Section (currently disabled; keep markup + JS hooks for later) -->
-                <section id="symbol-detection-section" class="sidebar-section" hidden>
-                    <div class="section-header">
-                        <div class="section-title">Symbol Detection</div>
-                        <span class="badge-beta">BETA</span>
+                <!-- Local line tracing and valve-to-line association. It is deliberately opt-in. -->
+                <section id="pipe-tracing-section" class="sidebar-section pipe-tracing-section" data-sidebar-view="pipe">
+                    <div class="section-header pipe-tracing-section__header">
+                        <div class="section-title">Pipe tracing</div>
+                        <div class="section-header-actions">
+                            <span class="badge-beta">LOCAL</span>
+                            <button id="pipe-tracing-toggle-setup-btn" class="btn-mini pipe-tracing-setup-toggle" type="button" aria-pressed="false" title="Hide tracing setup and keep the inspector visible">Hide setup</button>
+                            <!-- Retained as a JS compatibility hook; the flyout X/rail owns visibility. -->
+                            <button id="toggle-pipe-tracing-btn" class="btn-toggle pipe-tracing-section__legacy-toggle" type="button" disabled aria-controls="pipe-tracing-tools" aria-expanded="false" hidden>Enable</button>
+                        </div>
                     </div>
-                    <div id="symbol-section" class="symbol-panel">
-                        
-                        <!-- Step 1: Capture Symbol -->
-                        <div class="symbol-step">
-                            <div class="step-header">
-                                <span class="step-number">1</span>
-                                <span class="step-title">Capture symbol from PDF</span>
+                    <div id="pipe-tracing-tools" class="sidebar-section-tools collapsed">
+                        <button id="pipe-tracing-toggle-btn" class="btn btn-compare pipe-tracing-setup" type="button" disabled>
+                            Enable Pipe Tracing
+                        </button>
+                        <div id="pipe-tracing-progress" class="pipe-tracing-progress pipe-tracing-setup" role="status" aria-live="polite" hidden>
+                            <div class="pipe-tracing-progress__header">
+                                <span>Line tracing</span>
+                                <strong id="pipe-tracing-progress-label">Checking 0/0</strong>
                             </div>
-                            <button id="capture-btn" class="btn btn-capture-full" onclick="startCustomCapture()">
-                                ✂️ Capture Symbol
-                            </button>
-                            <div class="symbol-hint" id="symbol-hint">
-                                Draw a box around any symbol in your PDF to capture it
-                            </div>
+                            <progress id="pipe-tracing-progress-bar" max="1" value="0"></progress>
                         </div>
-                        
-                        <!-- Loaded Templates -->
-                        <div id="template-status" class="template-chips">
-                            <!-- Template chips will appear here -->
-                        </div>
-                        
-                        <!-- Step 2: Detect -->
-                        <div class="symbol-step detect-step">
-                            <div class="step-header">
-                                <span class="step-number">2</span>
-                                <span class="step-title">Find symbols in PDF</span>
-                            </div>
-                            <div class="step-content">
-                                <button id="detect-symbols-btn" class="btn btn-detect" onclick="runSymbolDetection()">
-                                    🔍 Detect Symbols
-                                </button>
-                                <button class="btn btn-icon-only" onclick="clearSymbolData()" title="Clear all">
-                                    🗑️
-                                </button>
-                            </div>
-                            <div id="detection-results" class="detection-results">
-                                <!-- Results summary will appear here -->
-                            </div>
+
+                        <div id="pipe-tracing-controls" hidden>
+                            <details class="pipe-tracing-advanced">
+                                <summary>Debug view</summary>
+                                <div class="pipe-tracing-advanced__body">
+                                    <label class="radio-label pipe-tracing-debug-label">
+                                        <input id="pipe-tracing-debug-checkbox" type="checkbox">
+                                        Debug tracing
+                                    </label>
+                                    <section id="pipe-tracing-debug-inspector" class="pipe-tracing-debug-inspector" hidden aria-label="Trace inspector">
+                                        <div class="pipe-tracing-debug-inspector__header">
+                                            <div>
+                                                <strong>Trace inspector</strong>
+                                                <span>See why each node was continued or stopped.</span>
+                                            </div>
+                                            <div class="pipe-tracing-debug-inspector__actions">
+                                                <button id="pipe-tracing-expand-debug-btn" class="btn-mini" type="button" aria-pressed="false" title="Give the trace inspector more workspace">Expand</button>
+                                                <button id="pipe-tracing-first-issue-btn" class="btn-mini" type="button" disabled title="Jump to the first decision that needs review">First issue</button>
+                                                <button id="pipe-tracing-focus-route-btn" class="btn-mini" type="button" disabled title="Focus the selected route">Focus route</button>
+                                                <button id="pipe-tracing-copy-debug-btn" class="btn-mini" type="button" disabled title="Copy the selected trace diagnostics">Copy debug</button>
+                                            </div>
+                                        </div>
+                                        <div id="pipe-tracing-debug-summary" class="pipe-tracing-debug-summary" role="status"></div>
+                                        <p class="pipe-tracing-debug-map-hint">Select a step below to centre and mark that exact node on the P&amp;ID.</p>
+                                        <div id="pipe-tracing-debug-issue-nav" class="pipe-tracing-debug-issue-nav" hidden>
+                                            <button id="pipe-tracing-previous-issue-btn" class="btn-mini" type="button">Previous</button>
+                                            <span id="pipe-tracing-debug-issue-position" role="status">Issue 0 of 0</span>
+                                            <button id="pipe-tracing-next-issue-btn" class="btn-mini" type="button">Next</button>
+                                        </div>
+                                        <figure id="pipe-tracing-debug-magnifier" class="pipe-tracing-debug-magnifier" hidden>
+                                            <div class="pipe-tracing-debug-magnifier__header">
+                                                <strong id="pipe-tracing-debug-magnifier-title">Local view</strong>
+                                                <span id="pipe-tracing-debug-magnifier-meta"></span>
+                                            </div>
+                                            <canvas id="pipe-tracing-debug-magnifier-canvas" width="720" height="340" aria-label="Magnified P&amp;ID area around the selected trace decision"></canvas>
+                                            <figcaption><span class="is-route">green: traced route</span><span class="is-alternative">orange: competing edge</span><span class="is-node">purple: decision node</span></figcaption>
+                                        </figure>
+                                        <details class="pipe-tracing-debug-options">
+                                            <summary>Overlay layers and legend</summary>
+                                            <div class="pipe-tracing-debug-layers" aria-label="Debug layers">
+                                                <label><input id="pipe-tracing-layer-filtered" type="checkbox"> Filtered geometry</label>
+                                                <label><input id="pipe-tracing-layer-candidates" type="checkbox"> Candidate edges</label>
+                                                <label><input id="pipe-tracing-layer-labels" type="checkbox"> Node labels</label>
+                                                <label><input id="pipe-tracing-layer-seed" type="checkbox" checked> Seed marker</label>
+                                            </div>
+                                            <div class="pipe-tracing-debug-legend" aria-label="Debug legend">
+                                                <span><i class="trace-legend-swatch trace-legend-route"></i> selected route</span>
+                                                <span><i class="trace-legend-swatch trace-legend-filtered"></i> filtered geometry</span>
+                                                <span><i class="trace-legend-swatch trace-legend-tee"></i> tee / stop</span>
+                                                <span><i class="trace-legend-swatch trace-legend-crossing"></i> crossing</span>
+                                                <span><i class="trace-legend-swatch trace-legend-inline"></i> inline evidence</span>
+                                            </div>
+                                        </details>
+                                        <div id="pipe-tracing-debug-decisions" class="pipe-tracing-debug-decisions" aria-live="polite"></div>
+                                    </section>
+                                    <details id="pipe-tracing-technical-details" class="pipe-tracing-technical-details" hidden>
+                                        <summary>Technical details (JSON)</summary>
+                                        <pre id="pipe-tracing-diagnostics" class="pipe-tracing-diagnostics" hidden></pre>
+                                    </details>
+                                </div>
+                            </details>
                         </div>
                     </div>
                 </section>
@@ -193,18 +327,19 @@
                 <div class="completion-icon" id="completion-icon"></div>
             </div>
         </div>
+    </aside>
+
+    <div id="project-modal" class="project-modal" hidden>
+        <form id="project-form" class="project-modal__card">
+            <h2>Create local project</h2>
+            <label>Project name<input id="project-name-input" required maxlength="80" placeholder="e.g. Valhall Phase 2"></label>
+            <div class="project-modal__actions"><button type="button" id="cancel-project-btn" class="btn btn-secondary">Cancel</button><button class="btn btn-primary" type="submit">Create project</button></div>
+        </form>
     </div>
 
     <!-- Main Viewer -->
     <div id="viewer-container">
-        <button id="open-sidebar-btn" class="btn-floating" onclick="toggleSidebar()" title="Open Sidebar">☰</button>
         <button id="open-results-sidebar-btn" class="btn-floating" onclick="toggleResultsSidebar()" title="Show found tags">☰</button>
-        <div id="zoom-toolbar">
-            <span>Zoom:</span>
-            <input type="range" id="zoom-slider" min="0.2" max="3.0" step="0.1" value="1.0">
-            <span id="zoom-value">100%</span>
-        </div>
-
         <div id="viewer-empty-state" aria-hidden="false">
             <label class="pid-placeholder" for="fileInput" title="Choose a P&amp;ID PDF">
                 <img class="pid-placeholder__icon" src="Images/PDF.png" alt="" aria-hidden="true">
@@ -226,14 +361,43 @@
                 <span id="results-sidebar-title">Found tags</span>
                 <div class="results-sidebar-tabs" role="tablist" aria-label="Results view">
                     <button id="show-tags-view-btn" class="results-sidebar-tab active" type="button" role="tab" aria-selected="true">Tags</button>
+                    <button id="show-valve-line-view-btn" class="results-sidebar-tab" type="button" role="tab" aria-selected="false" disabled>Valve links</button>
                     <button id="show-pid-table-view-btn" class="results-sidebar-tab" type="button" role="tab" aria-selected="false" disabled>Table data</button>
                 </div>
             </div>
             <button class="btn-icon" onclick="toggleResultsSidebar()" title="Hide found tags">✕</button>
         </div>
         <div id="results-container">
+            <div id="trace-results-toolbar" class="trace-results-toolbar" hidden>
+                <div class="trace-results-summary-row">
+                    <span id="trace-results-summary">Tracing not run</span>
+                    <button id="copy-trace-results-btn" class="trace-results-copy-btn" type="button" disabled>Copy report</button>
+                </div>
+                <div class="trace-results-help">💬 Add note</div>
+            </div>
             <div id="tag-results-view">
                 <ul class="result-list" id="resultList"></ul>
+            </div>
+            <div id="valve-line-results-view" hidden>
+                <div class="valve-line-results-summary-row">
+                    <div class="valve-line-results-summary-copy">
+                        <div id="valve-line-results-summary" class="pid-table-results-summary">Trace a line to build valve links.</div>
+                        <div class="valve-line-link-legend" aria-label="Valve to line guide">
+                            <span class="valve-line-link-key is-valve">V</span><span>Valve</span>
+                            <span class="valve-line-link-arrow" aria-hidden="true">→</span>
+                            <span class="valve-line-link-key is-line">L</span><span>Line</span>
+                        </div>
+                    </div>
+                    <button id="show-all-valve-links-btn" class="valve-line-show-all" type="button" aria-pressed="false" disabled>Show links</button>
+                </div>
+                <div class="valve-line-results-wrap">
+                    <table id="valve-line-results">
+                        <thead>
+                            <tr><th>Valve</th><th>Line</th><th>Status</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
             </div>
             <div id="pid-table-results-view" hidden>
                 <div id="pid-table-results-summary" class="pid-table-results-summary">No P&amp;ID table data loaded.</div>
@@ -289,8 +453,8 @@
                     <option value="">None</option>
                 </select>
             </label>
-            <button id="export-compare-btn" class="compare-export-btn" onclick="exportLineListCompareToXlsx()" disabled>
-                Export XLSX
+            <button id="export-compare-btn" class="compare-export-btn" onclick="exportLineListCompareToCsv()" disabled>
+                Export CSV
             </button>
         </div>
 
@@ -302,8 +466,8 @@
     <div id="compare-attribute-overlay" class="compare-attribute-overlay" aria-hidden="true"></div>
 
     <!-- External JS -->
-    <script src="js/symbol-detector.js"></script>
     <script src="js/print-service.js"></script>
-    <script src="js/script.js"></script>
+    <script src="js/script.js?v=20260901-project-folder-toggle-show-all-link-clarity-valve-width-1"></script>
+    <script src="js/pipe-tracing.js?v=20260901-progress-1"></script>
 </body>
 </html>

@@ -60,14 +60,30 @@ async function saveAnnotatedPDF(pdfBytes, tags) {
             });
         }
 
-        const pdfDataUri = await pdfDoc.saveAsBase64({ dataUri: true });
-        
-        const link = document.createElement('a');
-        link.href = pdfDataUri;
-        link.download = 'audited_pid.pdf';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        const outputBytes = await pdfDoc.save();
+        const outputName = `${window.currentPDFName || 'pid'}_audited.pdf`;
+        const outputBlob = new Blob([outputBytes], { type: 'application/pdf' });
+        if (typeof downloadBlob === 'function') {
+            downloadBlob(outputBlob, outputName);
+        } else {
+            const pdfDataUri = await pdfDoc.saveAsBase64({ dataUri: true });
+            const link = document.createElement('a');
+            link.href = pdfDataUri;
+            link.download = outputName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+        if (typeof saveProjectArtifact === 'function') {
+            try {
+                const savedToFolder = await saveProjectArtifact(outputBlob, '04_Exports', outputName, 'annotated-pdf');
+                if (savedToFolder && typeof showToast === 'function') {
+                    showToast('Annotated PDF saved to project Exports', 'success');
+                }
+            } catch (folderError) {
+                console.warn('Could not save annotated PDF to project folder', folderError);
+            }
+        }
 
     } catch (err) {
         console.error("Error saving PDF:", err);

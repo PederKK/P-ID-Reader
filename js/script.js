@@ -30,6 +30,24 @@ const ACTUATED_SUFFIX_PATTERN = /^\d{4}[A-Z]?$/;
 let activeTagPattern = LINE_TAG_PATTERN;
 let currentSearchModes = new Set(['line']);
 
+// Keep the existing combined search behaviour, but retain the kind of each
+// match so optional experiments can distinguish line tags from valve tags.
+function classifyTagType(tagText) {
+    const text = String(tagText || '');
+    if (new RegExp(LINE_TAG_PATTERN.source, 'i').test(text) ||
+        new RegExp(LINE_TAG_PATTERN_ALT.source, 'i').test(text)) {
+        return 'line';
+    }
+    if (new RegExp(VALVE_TAG_PATTERN.source, 'i').test(text) ||
+        new RegExp(VALVE_TAG_PATTERN_ALT.source, 'i').test(text)) {
+        return 'valve';
+    }
+    if (new RegExp(ACTUATED_VALVE_TAG_PATTERN.source, 'i').test(text)) {
+        return 'actuated';
+    }
+    return 'unknown';
+}
+
 // P&ID table extraction is intentionally separate from tag/valve searching.
 // These aliases are matched against the searchable PDF text layer only.
 const PID_TABLE_FIELDS = [
@@ -142,20 +160,27 @@ const TABLE_MAX_KEY_VALUE_GAP = 140;
 
 const RENDER_SCALE = 2.0; 
 let allFoundTags = []; 
-let currentZoom = 1.0;
+const DEFAULT_ZOOM = 0.25;
+let currentZoom = DEFAULT_ZOOM;
 let currentPdfBytes = null;
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 3.0;
+const ZOOM_WHEEL_STEP = 0.02;
+// Keep the audit readable at its requested 25% default, but give a clicked
+// result enough scale to inspect without requiring a manual zoom adjustment.
+const TAG_FOCUS_ZOOM = 0.5;
+const TAG_FOCUS_FEEDBACK_MS = 900;
 
 // Duplicate handling for sidebar + CSV
 // - occurrences: show/count every match
 // - unique: combine identical tags across pages
 let duplicateMode = 'occurrences';
-const DEFAULT_PDF_LABEL = 'New Document.pdf';
 const DEFAULT_LINE_LIST_LABEL = 'No line list selected';
 const UI_PREF_KEYS = {
-    lastPdfName: 'pidReader.lastPdfName',
     lastLineListName: 'pidReader.lastLineListName',
     searchMode: 'pidReader.searchMode',
-    duplicateMode: 'pidReader.duplicateMode'
+    duplicateMode: 'pidReader.duplicateMode',
+    activeProjectId: 'pidReader.activeProjectId'
 };
 
 // DOM Elements
@@ -168,8 +193,6 @@ const spinner = document.getElementById('spinner');
 const completionIcon = document.getElementById('completion-icon');
 const exportBtn = document.getElementById('export-btn');
 const printBtn = document.getElementById('print-btn');
-const zoomSlider = document.getElementById('zoom-slider');
-const zoomValue = document.getElementById('zoom-value');
 const footerList = document.getElementById('footerList');
 const stickyFooter = document.getElementById('sticky-footer');
 const viewerContainer = document.getElementById('viewer-container');
@@ -177,6 +200,7 @@ const viewerEmptyState = document.getElementById('viewer-empty-state');
 const zoomContainer = document.getElementById('zoom-container'); // New container
 // Search is triggered by the sidebar button after selecting options.
 const searchBtn = document.getElementById('search-btn');
+const searchAction = document.getElementById('search-action');
 const lineListFileName = document.getElementById('lineListFileName');
 const compareDrawer = document.getElementById('compare-drawer');
 const compareDrawerResizeHandle = document.getElementById('compare-drawer-resize');
@@ -192,11 +216,442 @@ const exportPidTablesBtn = document.getElementById('export-pid-tables-btn');
 const pidTableExtractionStatus = document.getElementById('pid-table-extraction-status');
 const resultsSidebarTitle = document.getElementById('results-sidebar-title');
 const showTagsViewBtn = document.getElementById('show-tags-view-btn');
+const showValveLineViewBtn = document.getElementById('show-valve-line-view-btn');
 const showPidTableViewBtn = document.getElementById('show-pid-table-view-btn');
 const tagResultsView = document.getElementById('tag-results-view');
+const valveLineResultsView = document.getElementById('valve-line-results-view');
+const valveLineResultsSummary = document.getElementById('valve-line-results-summary');
+const showAllValveLinksBtn = document.getElementById('show-all-valve-links-btn');
+const valveLineResults = document.getElementById('valve-line-results');
 const pidTableResultsView = document.getElementById('pid-table-results-view');
 const pidTableResultsSummary = document.getElementById('pid-table-results-summary');
 const pidTableResults = document.getElementById('pid-table-results');
+const traceResultsToolbar = document.getElementById('trace-results-toolbar');
+const traceResultsSummary = document.getElementById('trace-results-summary');
+const copyTraceResultsBtn = document.getElementById('copy-trace-results-btn');
+let pipeTracingEnabled = false;
+let valveAssociationCounts = { assigned: 0, review: 0, unassigned: 0 };
+let activeResultsView = 'tags';
+let activeValveLineFocus = { valveId: null, lineId: null };
+
+// Local project library. Files are kept in IndexedDB so projects survive refreshes
+// without sending drawings anywhere.
+const projectMenu = document.getElementById('project-menu');
+const projectFiles = document.getElementById('project-files');
+const projectModal = document.getElementById('project-modal');
+const projectForm = document.getElementById('project-form');
+const projectNameInput = document.getElementById('project-name-input');
+const projectFolderStatus = document.getElementById('project-folder-status');
+const projectFolderTree = document.getElementById('project-folder-tree');
+const projectFolderHelp = document.getElementById('project-folder-help');
+const createProjectFolderBtn = document.getElementById('create-project-folder-btn');
+const connectProjectFolderBtn = document.getElementById('connect-project-folder-btn');
+const disconnectProjectFolderBtn = document.getElementById('disconnect-project-folder-btn');
+const useBrowserProjectBtn = document.getElementById('use-browser-project-btn');
+const PROJECT_FOLDER_LAYOUT = [
+    '01_P&ID',
+    '02_Line Lists',
+    '03_Reports',
+    '04_Exports'
+];
+let activeProjectId = null;
+let selectedProjectFolder = '01_P&ID';
+let projectFolderOpen = true;
+let projectDbPromise;
+function openProjectDb() {
+    if (projectDbPromise) return projectDbPromise;
+    projectDbPromise = new Promise((resolve, reject) => {
+        const request = indexedDB.open('pid-auditor-projects', 2);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'id' });
+            if (!db.objectStoreNames.contains('pdfs')) {
+                const store = db.createObjectStore('pdfs', { keyPath: 'id' });
+                store.createIndex('projectId', 'projectId');
+            }
+            if (!db.objectStoreNames.contains('files')) {
+                const store = db.createObjectStore('files', { keyPath: 'id' });
+                store.createIndex('projectId', 'projectId');
+                store.createIndex('projectFolder', ['projectId', 'folder']);
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+    return projectDbPromise;
+}
+async function projectTransaction(storeName, mode, callback) {
+    const db = await openProjectDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, mode), store = tx.objectStore(storeName);
+        const result = callback(store);
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = () => reject(tx.error);
+    });
+}
+async function getProjects() { return projectTransaction('projects', 'readonly', store => new Promise(r => { const q = store.getAll(); q.onsuccess = () => r(q.result); })); }
+async function getProjectPdfs(projectId) { return projectTransaction('pdfs', 'readonly', store => new Promise(r => { const q = store.index('projectId').getAll(projectId); q.onsuccess = () => r(q.result); })); }
+async function getProject(projectId) { return projectTransaction('projects', 'readonly', store => new Promise(r => { const q = store.get(projectId); q.onsuccess = () => r(q.result || null); })); }
+async function getProjectFiles(projectId, folder) {
+    return projectTransaction('files', 'readonly', store => new Promise(r => {
+        const q = store.index('projectFolder').getAll([projectId, folder]);
+        q.onsuccess = () => r(q.result || []);
+    }));
+}
+async function saveProjectFileRecord(blob, folder, fileName, kind = 'file') {
+    if (!activeProjectId || !blob) return;
+    await projectTransaction('files', 'readwrite', store => store.put({
+        id: crypto.randomUUID(),
+        projectId: activeProjectId,
+        folder,
+        name: fileName,
+        kind,
+        size: blob.size,
+        addedAt: Date.now(),
+        blob
+    }));
+}
+async function updateProject(projectId, changes) {
+    const project = await getProject(projectId);
+    if (!project) return;
+    await projectTransaction('projects', 'readwrite', store => store.put({ ...project, ...changes }));
+}
+async function ensureProjectFolderPermission(directoryHandle, request = false) {
+    if (!directoryHandle) return false;
+    if (!directoryHandle.queryPermission) return true;
+    let permission = await directoryHandle.queryPermission({ mode: 'readwrite' });
+    if (permission !== 'granted' && request && directoryHandle.requestPermission) {
+        permission = await directoryHandle.requestPermission({ mode: 'readwrite' });
+    }
+    return permission === 'granted';
+}
+async function createProjectFolderLayout(directoryHandle) {
+    for (const folderName of PROJECT_FOLDER_LAYOUT) {
+        await directoryHandle.getDirectoryHandle(folderName, { create: true });
+    }
+}
+function supportsNativeProjectFolders() {
+    return typeof window.showDirectoryPicker === 'function';
+}
+function getBrowserProjectFolderName(project) {
+    return project?.folderName || project?.name || 'Project files';
+}
+async function activateBrowserProjectFolder(project = null) {
+    const currentProject = project || await getProject(activeProjectId);
+    if (!currentProject || !activeProjectId) return false;
+    const folderName = getBrowserProjectFolderName(currentProject);
+    await updateProject(activeProjectId, { directoryHandle: null, folderMode: 'browser', folderName });
+    await renderProjectFolderStatus();
+    await renderProjectFiles();
+    return true;
+}
+async function useBrowserProjectFolder() {
+    if (!activeProjectId) await renderProjects();
+    const activated = await activateBrowserProjectFolder();
+    if (activated) showToast('Using the browser project library. Files stay on this device.', 'success');
+}
+async function renderProjectFolderStatus() {
+    if (!projectFolderStatus || !activeProjectId) return false;
+    const project = await getProject(activeProjectId);
+    const directoryHandle = project?.directoryHandle;
+    const hasBrowserFolder = project?.folderMode === 'browser';
+    const nativeFoldersAvailable = supportsNativeProjectFolders();
+    if (!directoryHandle && !hasBrowserFolder) {
+        projectFolderStatus.textContent = 'No main folder selected. Choose or create one to show project files.';
+        if (projectFolderTree) projectFolderTree.hidden = true;
+        if (projectFolderHelp) projectFolderHelp.hidden = true;
+        if (projectFiles) projectFiles.hidden = true;
+        if (createProjectFolderBtn) createProjectFolderBtn.textContent = nativeFoldersAvailable ? 'Create folder' : 'Create project folders';
+        if (connectProjectFolderBtn) connectProjectFolderBtn.textContent = nativeFoldersAvailable ? 'Use existing' : 'Use browser library';
+        if (useBrowserProjectBtn) useBrowserProjectBtn.hidden = !nativeFoldersAvailable;
+        if (disconnectProjectFolderBtn) disconnectProjectFolderBtn.hidden = true;
+        return false;
+    }
+
+    if (!directoryHandle && hasBrowserFolder) {
+        projectFolderStatus.textContent = `Project folders ready in browser: ${getBrowserProjectFolderName(project)}. Files stay in this project.`;
+        if (projectFolderTree) projectFolderTree.hidden = false;
+        if (projectFolderHelp) projectFolderHelp.hidden = false;
+        if (createProjectFolderBtn) createProjectFolderBtn.textContent = 'Create project folders';
+        if (connectProjectFolderBtn) connectProjectFolderBtn.textContent = 'Use browser library';
+        if (useBrowserProjectBtn) useBrowserProjectBtn.hidden = true;
+        if (disconnectProjectFolderBtn) disconnectProjectFolderBtn.hidden = false;
+        return true;
+    }
+
+    let permission = false;
+    try {
+        permission = await ensureProjectFolderPermission(directoryHandle);
+    } catch (error) {
+        console.warn('Could not query project folder permission', error);
+    }
+    projectFolderStatus.textContent = permission
+        ? `Connected: ${directoryHandle.name}`
+        : `Folder saved: ${directoryHandle.name}. Grant access to show its files.`;
+    if (projectFolderTree) projectFolderTree.hidden = !permission;
+    if (projectFolderHelp) projectFolderHelp.hidden = !permission;
+    if (projectFiles && !permission) projectFiles.hidden = true;
+    if (createProjectFolderBtn) createProjectFolderBtn.textContent = 'Create folder';
+    if (connectProjectFolderBtn) connectProjectFolderBtn.textContent = permission ? 'Change folder' : 'Grant access';
+    if (useBrowserProjectBtn) useBrowserProjectBtn.hidden = true;
+    if (disconnectProjectFolderBtn) disconnectProjectFolderBtn.hidden = false;
+    return permission;
+}
+async function connectProjectFolder() {
+    if (!activeProjectId) await renderProjects();
+    const currentProject = await getProject(activeProjectId);
+    if (currentProject?.folderMode === 'browser' && !currentProject.directoryHandle) {
+        await useBrowserProjectFolder();
+        return;
+    }
+    if (currentProject?.directoryHandle && connectProjectFolderBtn?.textContent !== 'Change folder') {
+        try {
+            const permissionGranted = await ensureProjectFolderPermission(currentProject.directoryHandle, true);
+            if (permissionGranted) {
+                await renderProjectFolderStatus();
+                await renderProjectFiles();
+                showToast(`Project folder ready: ${currentProject.directoryHandle.name}`, 'success');
+            } else {
+                showToast('Folder permission was not granted', 'warning');
+            }
+        } catch (error) {
+            console.error('Could not grant project folder access', error);
+            showToast('Could not access the project folder', 'error');
+        }
+        return;
+    }
+    if (!supportsNativeProjectFolders()) {
+        await activateBrowserProjectFolder(currentProject);
+        showToast('Using the browser project library. Files stay on this device.', 'success');
+        return;
+    }
+    try {
+        const directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        await createProjectFolderLayout(directoryHandle);
+        await updateProject(activeProjectId, { directoryHandle, folderMode: 'filesystem', folderName: directoryHandle.name });
+        await renderProjectFolderStatus();
+        await renderProjectFiles();
+        showToast(`Project folder connected: ${directoryHandle.name}`, 'success');
+    } catch (error) {
+        if (error?.name === 'AbortError') return;
+        console.error('Could not connect project folder', error);
+        if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError' || error?.name === 'TypeError') {
+            await activateBrowserProjectFolder(currentProject);
+            showToast('Folder picker is unavailable here. Using the browser project library instead.', 'info');
+            return;
+        }
+        showToast('Could not connect the selected folder', 'error');
+    }
+}
+async function createProjectFolder() {
+    if (!activeProjectId) await renderProjects();
+    const currentProject = await getProject(activeProjectId);
+    if (currentProject?.folderMode === 'browser' && !currentProject.directoryHandle) {
+        await activateBrowserProjectFolder(currentProject);
+        showToast('Project folders are already ready in the browser library.', 'info');
+        return;
+    }
+    if (!supportsNativeProjectFolders()) {
+        await activateBrowserProjectFolder(currentProject);
+        showToast('Created project folders in the browser library. Files stay on this device.', 'success');
+        return;
+    }
+    try {
+        const parentHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        const project = currentProject || await getProject(activeProjectId);
+        const directoryName = safeFileName(project?.name || 'PID Project');
+        const directoryHandle = await parentHandle.getDirectoryHandle(directoryName, { create: true });
+        await createProjectFolderLayout(directoryHandle);
+        await updateProject(activeProjectId, { directoryHandle, folderMode: 'filesystem', folderName: directoryHandle.name });
+        await renderProjectFolderStatus();
+        await renderProjectFiles();
+        showToast(`Created project folder: ${directoryHandle.name}`, 'success');
+    } catch (error) {
+        if (error?.name === 'AbortError') return;
+        console.error('Could not create project folder', error);
+        if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError' || error?.name === 'TypeError') {
+            await activateBrowserProjectFolder(currentProject);
+            showToast('Folder picker is unavailable here. Created project folders in the browser library instead.', 'info');
+            return;
+        }
+        showToast('Could not create the project folder', 'error');
+    }
+}
+async function disconnectProjectFolder() {
+    if (!activeProjectId) return;
+    await updateProject(activeProjectId, { directoryHandle: null, folderMode: null, folderName: null });
+    await renderProjectFolderStatus();
+    showToast('Project folder disconnected. Browser library is unchanged.', 'info');
+}
+function safeFileName(fileName) {
+    return String(fileName || 'file').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || 'file';
+}
+async function getUniqueFileHandle(directoryHandle, fileName) {
+    const cleanName = safeFileName(fileName);
+    const extensionMatch = cleanName.match(/(\.[^.]*)$/);
+    const stem = extensionMatch ? cleanName.slice(0, -extensionMatch[1].length) : cleanName;
+    const extension = extensionMatch ? extensionMatch[1] : '';
+    for (let index = 1; index <= 100; index += 1) {
+        const candidate = index === 1 ? cleanName : `${stem} (${index})${extension}`;
+        try {
+            await directoryHandle.getFileHandle(candidate);
+        } catch (error) {
+            if (error?.name === 'NotFoundError') return directoryHandle.getFileHandle(candidate, { create: true });
+            throw error;
+        }
+    }
+    throw new Error('Could not create a unique file name');
+}
+async function saveBlobToProjectFolder(blob, folderName, fileName) {
+    if (!activeProjectId || !blob) return false;
+    const project = await getProject(activeProjectId);
+    const directoryHandle = project?.directoryHandle;
+    if (!directoryHandle || !(await ensureProjectFolderPermission(directoryHandle))) return false;
+    const folderHandle = await directoryHandle.getDirectoryHandle(folderName, { create: true });
+    const fileHandle = await getUniqueFileHandle(folderHandle, fileName);
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return true;
+}
+async function saveProjectArtifact(blob, folderName, fileName, kind = 'file') {
+    await saveProjectFileRecord(blob, folderName, fileName, kind);
+    return saveBlobToProjectFolder(blob, folderName, fileName);
+}
+function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = safeFileName(fileName);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+async function saveLocalPdf(file) {
+    if (!activeProjectId) return;
+    await projectTransaction('pdfs', 'readwrite', store => store.put({ id: crypto.randomUUID(), projectId: activeProjectId, name: file.name, size: file.size, addedAt: Date.now(), blob: file }));
+    await saveBlobToProjectFolder(file, '01_P&ID', file.name);
+    await renderProjectFiles();
+}
+async function getPhysicalProjectFiles(folderName) {
+    const project = await getProject(activeProjectId);
+    const directoryHandle = project?.directoryHandle;
+    if (!directoryHandle || !(await ensureProjectFolderPermission(directoryHandle))) return null;
+
+    try {
+        const folderHandle = await directoryHandle.getDirectoryHandle(folderName, { create: true });
+        const files = [];
+        for await (const [name, fileHandle] of folderHandle.entries()) {
+            if (fileHandle.kind === 'file') {
+                files.push({ id: `physical:${folderName}:${name}`, name, kind: 'physical', fileHandle });
+            }
+        }
+        return files.sort((a, b) => a.name.localeCompare(b.name));
+    } catch (error) {
+        console.warn(`Could not list project folder ${folderName}`, error);
+        return null;
+    }
+}
+async function getProjectFolderItems(folderName) {
+    const physicalFiles = await getPhysicalProjectFiles(folderName);
+    if (physicalFiles !== null) return physicalFiles;
+    if (folderName === '01_P&ID') {
+        return (await getProjectPdfs(activeProjectId)).map(file => ({ ...file, kind: 'pdf' }));
+    }
+    return getProjectFiles(activeProjectId, folderName);
+}
+function getFileIcon(fileName) {
+    const extension = String(fileName || '').split('.').pop()?.toLowerCase();
+    if (extension === 'pdf') return '📄';
+    if (extension === 'csv') return '📊';
+    return '📎';
+}
+async function openProjectFile(fileItem) {
+    try {
+        const file = fileItem.fileHandle ? await fileItem.fileHandle.getFile() : fileItem.blob;
+        if (!file) return;
+        if (/\.pdf$/i.test(file.name)) {
+            window.currentPDFName = file.name.replace(/\.pdf$/i, '');
+            await runAudit(file);
+            return;
+        }
+        if (/\.csv$/i.test(file.name)) {
+            downloadBlob(file, file.name);
+            showToast(`${file.name} opened via download`, 'info');
+            return;
+        }
+        showToast(`${file.name} is available in the project folder`, 'info');
+    } catch (error) {
+        console.error('Could not open project file', error);
+        showToast('Could not open this project file', 'error');
+    }
+}
+async function renderProjects() {
+    if (!projectMenu) return;
+    let projects = await getProjects();
+    if (!projects.length) {
+        const starter = { id: crypto.randomUUID(), name: 'My first project', createdAt: Date.now() };
+        await projectTransaction('projects', 'readwrite', store => store.put(starter));
+        projects = [starter];
+    }
+    const rememberedProjectId = readPreference(UI_PREF_KEYS.activeProjectId);
+    activeProjectId = activeProjectId || projects.find(project => project.id === rememberedProjectId)?.id || projects[0].id;
+    rememberPreference(UI_PREF_KEYS.activeProjectId, activeProjectId);
+    projectMenu.innerHTML = projects.map(p => `<li class="project-menu__item ${p.id === activeProjectId ? 'project-menu__item--active' : ''}" data-project-id="${p.id}">${escapeHtml(p.name)}</li>`).join('');
+    projectMenu.querySelectorAll('[data-project-id]').forEach(el => el.addEventListener('click', async () => { activeProjectId = el.dataset.projectId; rememberPreference(UI_PREF_KEYS.activeProjectId, activeProjectId); await renderProjects(); }));
+    const folderReady = await renderProjectFolderStatus();
+    if (folderReady) await renderProjectFiles();
+}
+async function renderProjectFiles() {
+    if (!projectFiles || !activeProjectId) return;
+    const selectedFolderButton = Array.from(projectFolderTree?.querySelectorAll('[data-project-folder]') || [])
+        .find(button => button.dataset.projectFolder === selectedProjectFolder);
+    if (selectedFolderButton) selectedFolderButton.after(projectFiles);
+    document.querySelectorAll('[data-project-folder]').forEach(button => {
+        button.setAttribute('aria-expanded', button === selectedFolderButton && projectFolderOpen ? 'true' : 'false');
+    });
+
+    const project = await getProject(activeProjectId);
+    const hasBrowserFolder = project?.folderMode === 'browser';
+    if ((!project?.directoryHandle && !hasBrowserFolder) || (project.directoryHandle && !(await ensureProjectFolderPermission(project.directoryHandle)))) {
+        projectFiles.hidden = true;
+        return;
+    }
+    const files = await getProjectFolderItems(selectedProjectFolder);
+    projectFiles.hidden = false;
+    projectFiles.innerHTML = `<div class="project-files__title">${files.length} file${files.length === 1 ? '' : 's'}</div>` + (files.length ? files.map(f => `<button type="button" class="project-file" data-project-file-id="${escapeHtml(f.id)}"><span>${getFileIcon(f.name)} ${escapeHtml(f.name)}</span><small>Open</small></button>`).join('') : `<div class="project-files__empty">No files in this folder yet.</div>`);
+    projectFiles.querySelectorAll('[data-project-file-id]').forEach(el => el.addEventListener('click', async () => {
+        const file = files.find(candidate => candidate.id === el.dataset.projectFileId);
+        if (file) await openProjectFile(file);
+    }));
+}
+function escapeHtml(value) { return String(value).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c])); }
+document.querySelectorAll('[data-project-folder]').forEach(folderButton => folderButton.addEventListener('click', async () => {
+    const nextFolder = folderButton.dataset.projectFolder;
+    const isSameFolder = selectedProjectFolder === nextFolder;
+    const isClosing = isSameFolder && projectFolderOpen;
+    selectedProjectFolder = nextFolder;
+    projectFolderOpen = !isClosing;
+    document.querySelectorAll('[data-project-folder]').forEach(button => {
+        const isActive = button === folderButton;
+        button.classList.toggle('project-folder-row--active', isActive);
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        button.setAttribute('aria-expanded', isActive && projectFolderOpen ? 'true' : 'false');
+    });
+    if (isClosing) {
+        if (projectFiles) projectFiles.hidden = true;
+        return;
+    }
+    await renderProjectFiles();
+}));
+document.getElementById('cancel-project-btn')?.addEventListener('click', () => { projectModal.hidden = true; });
+createProjectFolderBtn?.addEventListener('click', createProjectFolder);
+connectProjectFolderBtn?.addEventListener('click', connectProjectFolder);
+disconnectProjectFolderBtn?.addEventListener('click', disconnectProjectFolder);
+useBrowserProjectBtn?.addEventListener('click', useBrowserProjectFolder);
+projectForm?.addEventListener('submit', async e => { e.preventDefault(); const name = projectNameInput.value.trim(); if (!name) return; const project = { id: crypto.randomUUID(), name, createdAt: Date.now() }; await projectTransaction('projects', 'readwrite', store => store.put(project)); activeProjectId = project.id; rememberPreference(UI_PREF_KEYS.activeProjectId, activeProjectId); projectModal.hidden = true; projectNameInput.value = ''; await renderProjects(); });
+renderProjects().catch(error => console.warn('Local project storage unavailable', error));
 
 // Track current page for footer updates
 let currentPageNumber = 1;
@@ -208,7 +663,6 @@ let pidTableRows = [];
 let activePidTableRowId = null;
 const compareDrawerState = {
     fileName: '',
-    sheetName: '',
     lineColumnLabel: '',
     lineColumnIndex: -1,
     lineHeaders: [],
@@ -236,6 +690,15 @@ let isPanning = false;
 let startX, startY, scrollLeft, scrollTop;
 
 fileInput.addEventListener('change', handleFileUpload);
+lineListInput?.addEventListener('change', async event => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+        await saveProjectArtifact(file, '02_Line Lists', file.name, 'line-list');
+    } catch (error) {
+        console.warn('Could not save line list to project folder', error);
+    }
+});
 document.querySelectorAll('input[name="searchMode"]').forEach(input => {
     input.addEventListener('change', () => {
         const selectedModes = Array.from(document.querySelectorAll('input[name="searchMode"]:checked'))
@@ -279,6 +742,12 @@ if (exportPidTablesBtn) {
 if (showTagsViewBtn) {
     showTagsViewBtn.addEventListener('click', () => showResultsView('tags'));
 }
+if (showValveLineViewBtn) {
+    showValveLineViewBtn.addEventListener('click', () => showResultsView('valves'));
+}
+if (showAllValveLinksBtn) {
+    showAllValveLinksBtn.addEventListener('click', toggleAllValveLineConnectors);
+}
 if (showPidTableViewBtn) {
     showPidTableViewBtn.addEventListener('click', () => showResultsView('tables'));
 }
@@ -287,6 +756,37 @@ if (pidTableResults) {
         const rowElement = event.target.closest('tbody tr[data-table-row-id]');
         if (!rowElement) return;
         jumpToPidTableRow(Number(rowElement.dataset.tableRowId));
+    });
+}
+if (valveLineResults) {
+    valveLineResults.addEventListener('click', (event) => {
+        const row = event.target.closest('tbody tr[data-valve-id]');
+        const valve = row && allFoundTags.find(item => item.id === Number(row.dataset.valveId));
+        if (!valve) return;
+
+        const showLinkButton = event.target.closest('button[data-show-link-line-id]');
+        if (showLinkButton) {
+            event.stopPropagation();
+            const preferredLineId = activeValveLineFocus.valveId === valve.id && activeValveLineFocus.lineId !== null
+                ? activeValveLineFocus.lineId
+                : Number(showLinkButton.dataset.showLinkLineId);
+            const line = allFoundTags.find(item => item.id === Number(preferredLineId));
+            focusValveLineConnection(valve, line || null, row, true, false);
+            return;
+        }
+
+        const lineButton = event.target.closest('button[data-line-id]');
+        if (lineButton) {
+            event.stopPropagation();
+            const line = allFoundTags.find(item => item.id === Number(lineButton.dataset.lineId));
+            focusValveLineConnection(valve, line || null, row);
+            return;
+        }
+
+        const line = valveLineOptions(valve)
+            .map(option => allFoundTags.find(item => item.id === Number(option.lineId)))
+            .find(Boolean) || null;
+        focusValveLineConnection(valve, line, row);
     });
 }
 
@@ -303,7 +803,11 @@ restoreRememberedSelections();
 // --- PANNING CONTROLS ---
 viewerContainer.addEventListener('mousedown', (e) => {
     // Only pan if left click and not on a highlight box or interactive element
-    if (e.button !== 0 || e.target.closest('.highlight-box') || e.target.closest('.btn-floating')) return;
+    if (
+        e.button !== 0 ||
+        e.target.closest('.highlight-box') ||
+        e.target.closest('.btn-floating')
+    ) return;
     
     isPanning = true;
     viewerContainer.classList.add('grabbing');
@@ -364,30 +868,258 @@ document.addEventListener('keydown', (e) => {
 viewerContainer.addEventListener('wheel', (e) => {
     if (e.ctrlKey) {
         e.preventDefault();
-        updateZoom(e.deltaY > 0 ? -0.1 : 0.1);
+        // Keep the point below the mouse stationary while zooming. A smaller
+        // step also makes trackpads and high-resolution mouse wheels easier to
+        // control.
+        const anchor = getZoomAnchor(e.clientX, e.clientY);
+        updateZoom(e.deltaY > 0 ? -ZOOM_WHEEL_STEP : ZOOM_WHEEL_STEP, anchor);
     }
 }, { passive: false });
 
-function updateZoom(delta) {
-    let newZoom = parseFloat(currentZoom) + delta;
-    newZoom = Math.max(0.2, Math.min(newZoom, 3.0)); // Clamp between 0.2 and 3.0
-    
-    currentZoom = newZoom.toFixed(1);
-    zoomSlider.value = currentZoom;
-    applyZoom();
+function getZoomAnchor(clientX, clientY) {
+    const wrapperRect = pdfWrapper?.getBoundingClientRect();
+    const zoom = Number(currentZoom) || 1;
+    if (!wrapperRect || wrapperRect.width <= 0 || wrapperRect.height <= 0) return null;
+
+    return {
+        clientX,
+        clientY,
+        // Store the point in the wrapper's unscaled coordinate system.
+        contentX: (clientX - wrapperRect.left) / zoom,
+        contentY: (clientY - wrapperRect.top) / zoom
+    };
 }
 
-function applyZoom() {
-    zoomValue.textContent = Math.round(currentZoom * 100) + '%';
+function getViewerCenterAnchor() {
+    const viewerRect = viewerContainer?.getBoundingClientRect();
+    if (!viewerRect) return null;
+    return getZoomAnchor(
+        viewerRect.left + viewerRect.width / 2,
+        viewerRect.top + viewerRect.height / 2
+    );
+}
+
+function updateZoom(delta, anchor = null) {
+    const zoomAnchor = anchor || getViewerCenterAnchor();
+    let newZoom = parseFloat(currentZoom) + delta;
+    newZoom = Math.max(ZOOM_MIN, Math.min(newZoom, ZOOM_MAX));
     
-    // Scale the inner wrapper
-    pdfWrapper.style.transform = `scale(${currentZoom})`;
+    currentZoom = Number(newZoom.toFixed(2));
+    applyZoom(zoomAnchor);
+}
+
+function applyZoom(anchor = null) {
+    const zoom = Number(currentZoom) || 1;
+    
+    // Scale the inner wrapper. The wrapper remains top-left based; the scroll
+    // adjustment below is what makes zooming feel anchored to the pointer.
+    pdfWrapper.style.transform = `scale(${zoom})`;
     
     // Resize the outer container to occupy the correct space
     if (pdfContentWidth > 0 && pdfContentHeight > 0) {
-        zoomContainer.style.width = `${pdfContentWidth * currentZoom}px`;
-        zoomContainer.style.height = `${pdfContentHeight * currentZoom}px`;
+        zoomContainer.style.width = `${pdfContentWidth * zoom}px`;
+        zoomContainer.style.height = `${pdfContentHeight * zoom}px`;
     }
+
+    if (anchor) {
+        const wrapperRect = pdfWrapper.getBoundingClientRect();
+        const zoomedPointX = wrapperRect.left + anchor.contentX * zoom;
+        const zoomedPointY = wrapperRect.top + anchor.contentY * zoom;
+
+        // Move the scroll position by the amount the anchored point moved.
+        // The browser will clamp this naturally at the document edges.
+        viewerContainer.scrollLeft += zoomedPointX - anchor.clientX;
+        viewerContainer.scrollTop += zoomedPointY - anchor.clientY;
+    }
+}
+
+function centerViewerOnElement(element, behavior = 'smooth') {
+    if (!element || !viewerContainer) return;
+
+    const viewerRect = viewerContainer.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const viewerCenterX = viewerRect.left + viewerRect.width / 2;
+    const viewerCenterY = viewerRect.top + viewerRect.height / 2;
+    const elementCenterX = elementRect.left + elementRect.width / 2;
+    const elementCenterY = elementRect.top + elementRect.height / 2;
+
+    viewerContainer.scrollTo({
+        left: viewerContainer.scrollLeft + elementCenterX - viewerCenterX,
+        top: viewerContainer.scrollTop + elementCenterY - viewerCenterY,
+        behavior
+    });
+}
+
+/**
+ * Focus a PDF result for review. The normal viewer starts at 25% so a whole
+ * sheet fits on screen; clicking a result temporarily raises that only as
+ * far as 50% (or keeps a user's already higher zoom), then centers the hit.
+ */
+function focusPdfTag(item) {
+    if (!item || !viewerContainer) return;
+
+    const target = item.element || document.getElementById(`page-${item.page}`);
+    if (!target) return;
+
+    const zoom = Number(currentZoom) || DEFAULT_ZOOM;
+    if (zoom < TAG_FOCUS_ZOOM) {
+        const anchor = getViewerCenterAnchor();
+        currentZoom = TAG_FOCUS_ZOOM;
+        applyZoom(anchor);
+    }
+
+    target.classList.add('active');
+    // Let the transformed layout settle before measuring the target. This is
+    // more reliable than scrollIntoView when the PDF is scaled from its origin.
+    requestAnimationFrame(() => {
+        centerViewerOnElement(target, 'smooth');
+    });
+    window.setTimeout(() => target.classList.remove('active'), TAG_FOCUS_FEEDBACK_MS);
+}
+
+function clearValveLineConnectors(resetButton = true) {
+    document.querySelectorAll('.valve-line-connector-overlay').forEach(element => element.remove());
+    if (resetButton && showAllValveLinksBtn) {
+        showAllValveLinksBtn.setAttribute('aria-pressed', 'false');
+        showAllValveLinksBtn.textContent = showAllValveLinksBtn.dataset.defaultLabel || 'Show links';
+        showAllValveLinksBtn.title = '';
+    }
+}
+
+function clearValveLineConnectionFocus() {
+    clearValveLineConnectors();
+    document.querySelectorAll('.highlight-box.connection-focus-valve, .highlight-box.connection-focus-line')
+        .forEach(element => {
+            element.classList.remove('connection-focus-valve', 'connection-focus-line');
+            element.removeAttribute('data-connection-focus');
+        });
+    valveLineResults?.querySelectorAll('tbody tr.is-selected')
+        .forEach(row => row.classList.remove('is-selected'));
+}
+
+function drawValveLineConnector(valve, line, options = {}) {
+    if (!valve?.element || !line?.element || valve.page !== line.page) return false;
+    const pageDiv = document.getElementById(`page-${valve.page}`);
+    if (!pageDiv) return false;
+
+    const preserveExisting = Boolean(options.preserveExisting);
+    const showAll = Boolean(options.showAll);
+    if (!preserveExisting) clearValveLineConnectors();
+    const pageRect = pageDiv.getBoundingClientRect();
+    const pageWidth = pageDiv.clientWidth || Number.parseFloat(pageDiv.style.width) || 0;
+    const pageHeight = pageDiv.clientHeight || Number.parseFloat(pageDiv.style.height) || 0;
+    if (!pageWidth || !pageHeight) return false;
+
+    const toPagePoint = (element) => {
+        const rect = element.getBoundingClientRect();
+        if (pageRect.width && pageRect.height && rect.width && rect.height) {
+            return {
+                x: ((rect.left + rect.width / 2) - pageRect.left) * (pageWidth / pageRect.width),
+                y: ((rect.top + rect.height / 2) - pageRect.top) * (pageHeight / pageRect.height)
+            };
+        }
+        return {
+            x: (Number.parseFloat(element.style.left) || 0) + (Number.parseFloat(element.style.width) || 0) / 2,
+            y: (Number.parseFloat(element.style.top) || 0) + (Number.parseFloat(element.style.height) || 0) / 2
+        };
+    };
+    const valvePoint = toPagePoint(valve.element);
+    const linePoint = toPagePoint(line.element);
+    const deltaX = linePoint.x - valvePoint.x;
+    const deltaY = linePoint.y - valvePoint.y;
+    const length = Math.hypot(deltaX, deltaY);
+    if (!Number.isFinite(length) || length < 1) return false;
+
+    const overlay = document.createElement('div');
+    overlay.className = `valve-line-connector-overlay${showAll ? ' is-all' : ''}`;
+    overlay.setAttribute('aria-hidden', 'true');
+
+    const connector = document.createElement('div');
+    connector.className = 'valve-line-connector-stroke';
+    connector.style.left = `${valvePoint.x}px`;
+    connector.style.top = `${valvePoint.y}px`;
+    connector.style.width = `${length}px`;
+    connector.style.transform = `translateY(-50%) rotate(${Math.atan2(deltaY, deltaX)}rad)`;
+
+    const makeEndpoint = (point, role, label) => {
+        const endpoint = document.createElement('span');
+        endpoint.className = `valve-line-connector-endpoint is-${role}`;
+        endpoint.style.left = `${point.x}px`;
+        endpoint.style.top = `${point.y}px`;
+        endpoint.textContent = label;
+        return endpoint;
+    };
+
+    overlay.append(
+        connector,
+        makeEndpoint(valvePoint, 'valve', 'V'),
+        makeEndpoint(linePoint, 'line', 'L')
+    );
+    if (!showAll) {
+        const label = document.createElement('span');
+        label.className = 'valve-line-connector-label';
+        label.style.left = `${(valvePoint.x + linePoint.x) / 2}px`;
+        label.style.top = `${(valvePoint.y + linePoint.y) / 2}px`;
+        label.textContent = 'Valve → Line';
+        overlay.appendChild(label);
+    }
+    pageDiv.appendChild(overlay);
+    return true;
+}
+
+function valveLinePairs() {
+    return allFoundTags.filter(isValveAuditTag).map(valve => {
+        const option = valveLineOptions(valve)[0];
+        const line = option && allFoundTags.find(item => item.id === Number(option.lineId));
+        return line ? { valve, line } : null;
+    }).filter(Boolean);
+}
+
+function showAllValveLineConnectors() {
+    clearValveLineConnectionFocus();
+    const pairs = valveLinePairs();
+    let shown = 0;
+    for (const { valve, line } of pairs) {
+        if (drawValveLineConnector(valve, line, { preserveExisting: true, showAll: true })) shown += 1;
+    }
+    if (showAllValveLinksBtn) {
+        showAllValveLinksBtn.setAttribute('aria-pressed', shown ? 'true' : 'false');
+        showAllValveLinksBtn.textContent = shown ? 'Hide links' : (showAllValveLinksBtn.dataset.defaultLabel || 'Show links');
+        showAllValveLinksBtn.title = shown ? `${shown} links shown` : '';
+    }
+    return shown;
+}
+
+function toggleAllValveLineConnectors() {
+    if (showAllValveLinksBtn?.getAttribute('aria-pressed') === 'true') {
+        clearValveLineConnectors();
+        return;
+    }
+    showAllValveLineConnectors();
+}
+
+function focusValveLineConnection(valve, line = null, row = null, showConnector = false, retraceLine = true) {
+    if (!valve) return;
+
+    clearValveLineConnectionFocus();
+    activeValveLineFocus = {
+        valveId: valve.id,
+        lineId: line?.id ?? null
+    };
+
+    if (row) row.classList.add('is-selected');
+    if (valve.element) {
+        valve.element.classList.add('connection-focus-valve');
+        valve.element.dataset.connectionFocus = 'VALVE';
+    }
+    if (line?.element) {
+        line.element.classList.add('connection-focus-line');
+        line.element.dataset.connectionFocus = 'LINE';
+    }
+
+    if (line && retraceLine) window.PipeTracing?.selectTag?.(line);
+    focusPdfTag(valve);
+    if (showConnector && line) requestAnimationFrame(() => drawValveLineConnector(valve, line));
 }
 
 function setViewerEmptyState(visible) {
@@ -427,6 +1159,17 @@ function toggleLineListTools() {
     btn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
 }
 
+function toggleSidebarSection(contentId, buttonId) {
+    const content = document.getElementById(contentId);
+    const btn = document.getElementById(buttonId);
+    if (!content || !btn) return;
+
+    content.classList.toggle('collapsed');
+    const isCollapsed = content.classList.contains('collapsed');
+    btn.textContent = isCollapsed ? 'Show' : 'Hide';
+    btn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+}
+
 function collapseFooter(e) {
     e.stopPropagation(); 
     document.getElementById('sticky-footer').classList.add('collapsed');
@@ -439,20 +1182,155 @@ function expandFooter() {
     }
 }
 
+function syncSidebarRail(isOpen, activeButtonId = null) {
+    const sidebar = document.getElementById('sidebar');
+    const title = document.getElementById('sidebar-view-title');
+    const railButtons = document.querySelectorAll('#tool-rail > .tool-rail__button');
+    const open = !!isOpen;
+
+    if (sidebar) {
+        sidebar.setAttribute('aria-hidden', open ? 'false' : 'true');
+        if (title) sidebar.setAttribute('aria-label', title.textContent.trim());
+    }
+
+    railButtons.forEach(button => {
+        const isActive = open && button.id === activeButtonId;
+        button.setAttribute('aria-expanded', isActive ? 'true' : 'false');
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+}
+
+const SIDEBAR_VIEW_TITLES = {
+    search: 'Search tools',
+    projects: 'Projects and files',
+    compare: 'Line list compare',
+    table: 'P&ID table extraction',
+    pipe: 'Pipe tracing'
+};
+
+function ensureSidebarSectionOpen(contentId, buttonId) {
+    const content = document.getElementById(contentId);
+    const button = document.getElementById(buttonId);
+    if (!content || !button) return;
+
+    if (content.classList.contains('collapsed')) {
+        content.classList.remove('collapsed');
+        button.textContent = 'Hide';
+        button.setAttribute('aria-expanded', 'true');
+    }
+}
+
+function applySidebarViewSections(view) {
+    document.querySelectorAll('#sidebar .sidebar-section[data-sidebar-view]').forEach(section => {
+        const allowedViews = (section.dataset.sidebarView || '').split(/\s+/).filter(Boolean);
+        section.hidden = !allowedViews.includes(view);
+    });
+}
+
+function setSidebarView(view, railButtonId = null) {
+    if (!SIDEBAR_VIEW_TITLES[view]) return;
+
+    const sidebar = document.getElementById('sidebar');
+    if (!sidebar) return;
+
+    const isOpen = !document.body.classList.contains('sidebar-collapsed');
+    const currentView = sidebar.dataset.toolView || 'search';
+    if (isOpen && currentView === view) {
+        toggleSidebar();
+        return;
+    }
+
+    document.body.classList.remove('sidebar-collapsed');
+    sidebar.dataset.toolView = view;
+    applySidebarViewSections(view);
+
+    const title = document.getElementById('sidebar-view-title');
+    if (title) title.textContent = SIDEBAR_VIEW_TITLES[view];
+
+    syncSidebarRail(true, railButtonId || `tool-rail-${view === 'search' ? 'search' : view}-btn`);
+
+    if (view === 'compare') {
+        ensureSidebarSectionOpen('line-list-tools', 'toggle-line-list-btn');
+    } else if (view === 'table') {
+        ensureSidebarSectionOpen('pid-table-extraction-tools', 'toggle-pid-table-extraction-btn');
+    } else if (view === 'pipe') {
+        ensureSidebarSectionOpen('pipe-tracing-tools', 'toggle-pipe-tracing-btn');
+    } else if (view === 'projects') {
+        projectMenu?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+}
+
 function toggleSidebar() {
-    document.body.classList.toggle('sidebar-collapsed');
-    // Trigger resize event so PDF viewer can adjust if needed (though we use CSS transform/width)
-    // But if we were using canvas width based on container, we might need to re-render.
-    // Since we use CSS scaling on a fixed canvas size, it should be fine.
+    const isOpen = !document.body.classList.contains('sidebar-collapsed');
+    if (isOpen) {
+        document.body.classList.add('sidebar-collapsed');
+        syncSidebarRail(false);
+        return;
+    }
+
+    setSidebarView('search', 'tool-rail-search-btn');
+}
+
+function getActiveResultsRailButtonId() {
+    return activeResultsView === 'valves' ? 'tool-rail-lists-btn' : 'tool-rail-found-tags-btn';
+}
+
+function hasValveLineResults() {
+    const hasValves = allFoundTags.some(isValveAuditTag);
+    const hasCompletedTrace = allFoundTags.some(item =>
+        isTraceLineTag(item) && ['yes', 'review', 'no'].includes(item.traceStatus)
+    );
+    return hasValves && hasCompletedTrace;
+}
+
+function syncResultsRail(isOpen, activeButtonId = null) {
+    const railButtons = document.querySelectorAll('#tool-rail .tool-rail__button--results');
+    const hasValveLinks = hasValveLineResults();
+    const open = !!isOpen;
+
+    railButtons.forEach(button => {
+        const isActive = open && button.id === activeButtonId;
+        button.disabled = button.id === 'tool-rail-lists-btn' && !hasValveLinks;
+        button.setAttribute('aria-disabled', button.disabled ? 'true' : 'false');
+        button.setAttribute('aria-expanded', isActive ? 'true' : 'false');
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+}
+
+function setResultsSidebarOpen(isOpen) {
+    document.body.classList.toggle('results-sidebar-collapsed', !isOpen);
+    syncResultsRail(isOpen, isOpen ? getActiveResultsRailButtonId() : null);
+}
+
+function setResultsRailView(view, railButtonId = null) {
+    if (view === 'valves' && !hasValveLineResults()) return;
+    if (view === 'tables' && !pidTableRows.length) return;
+
+    const isOpen = !document.body.classList.contains('results-sidebar-collapsed');
+    const targetButtonId = railButtonId || (view === 'valves' ? 'tool-rail-lists-btn' : 'tool-rail-found-tags-btn');
+    if (isOpen && getActiveResultsRailButtonId() === targetButtonId) {
+        setResultsSidebarOpen(false);
+        return;
+    }
+
+    showResultsView(view);
+    setResultsSidebarOpen(true);
 }
 
 function toggleResultsSidebar() {
-    document.body.classList.toggle('results-sidebar-collapsed');
+    const shouldOpen = document.body.classList.contains('results-sidebar-collapsed');
+    setResultsSidebarOpen(shouldOpen);
 }
 
-zoomSlider.addEventListener('input', (e) => {
-    currentZoom = e.target.value;
-    applyZoom();
+const initialSidebarView = document.getElementById('sidebar')?.dataset.toolView || 'projects';
+syncSidebarRail(!document.body.classList.contains('sidebar-collapsed'), `tool-rail-${initialSidebarView}-btn`);
+applySidebarViewSections(initialSidebarView);
+syncResultsRail(!document.body.classList.contains('results-sidebar-collapsed'));
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !document.body.classList.contains('sidebar-collapsed')) {
+        toggleSidebar();
+    }
 });
 
 async function handleFileUpload(e) {
@@ -461,6 +1339,12 @@ async function handleFileUpload(e) {
     
     // Store PDF name for export feature
     window.currentPDFName = file.name.replace(/\.pdf$/i, '');
+    try {
+        if (!activeProjectId) await renderProjects();
+        await saveLocalPdf(file);
+    } catch (storageError) {
+        console.warn('Could not save PDF to local project library', storageError);
+    }
     if (completionIcon) completionIcon.style.display = 'none';
     await runAudit(file);
 }
@@ -500,11 +1384,14 @@ async function runAudit(file) {
     activeTagPattern = new RegExp(patternSources.join('|'), 'g');
 
     // Reset UI/state so repeated searches don't require a refresh
+    clearValveLineConnectionFocus();
+    activeValveLineFocus = { valveId: null, lineId: null };
     pdfWrapper.innerHTML = '';
     setViewerEmptyState(false);
     resultList.innerHTML = '';
     footerList.innerHTML = '';
     allFoundTags = [];
+    window.PipeTracing?.reset?.();
     resetCompareDrawerState();
     closeCompareDrawer();
     pidPageMeta.clear();
@@ -522,15 +1409,15 @@ async function runAudit(file) {
     setPidTableExtractionStatus('Reading the P&ID text layer is in progress.');
 
     // Busy UI
+    if (searchAction) searchAction.hidden = true;
     if (searchBtn) searchBtn.disabled = true;
     fileInput.disabled = true;
     statusBar.textContent = 'Loading P&ID...';
     spinner.style.display = 'block';
     if (completionIcon) completionIcon.style.display = 'none';
 
-    // Set initial zoom to 0.8 (80%) which is usually a good fit for 2.0 render scale
-    currentZoom = 0.8;
-    zoomSlider.value = currentZoom;
+    // Start each P&ID at the requested default zoom.
+    currentZoom = DEFAULT_ZOOM;
     applyZoom();
 
     try {
@@ -550,6 +1437,10 @@ async function runAudit(file) {
             totalMatches += matchesOnPage;
         }
 
+        // Pipe tracing is opt-in and does not run here. This only gives the
+        // tracing experiment access to the completed audit results.
+        window.PipeTracing?.setDocumentReady?.(pdfDoc, allFoundTags);
+
         // Set initial dimensions for the wrapper
         pdfWrapper.style.width = `${pdfContentWidth}px`;
         pdfWrapper.style.height = `${pdfContentHeight}px`;
@@ -562,7 +1453,7 @@ async function runAudit(file) {
         if (totalMatches > 0) {
             exportBtn.style.display = 'flex';
             printBtn.style.display = 'flex';
-            document.body.classList.remove('results-sidebar-collapsed');
+            setResultsSidebarOpen(true);
         }
         if (completionIcon) completionIcon.style.display = 'block';
         if (extractPidTablesBtn) extractPidTablesBtn.disabled = false;
@@ -581,6 +1472,7 @@ async function runAudit(file) {
         spinner.style.display = 'none';
         fileInput.disabled = false;
         if (searchBtn) searchBtn.disabled = false;
+        if (searchAction) searchAction.hidden = !pdfDoc;
         if (!pdfDoc && extractPidTablesBtn) extractPidTablesBtn.disabled = true;
     }
 }
@@ -696,12 +1588,6 @@ async function processPage(pdf, pageNumber) {
             highlight.style.height = `${fontHeight}px`;
             highlight.style.transform = `rotate(${angleDeg}deg) translateY(-100%)`;
 
-            // Add click to copy functionality for highlight boxes
-            highlight.addEventListener('click', (e) => {
-                e.stopPropagation();
-                copyToClipboard(matchText);
-            });
-
             // --- PDF COORDINATE CALCULATION FOR PRINTING ---
             // Calculate PDF coordinates for printing
             const pdfTotalWidth = item.width; 
@@ -732,7 +1618,7 @@ async function processPage(pdf, pageNumber) {
             };
 
             pageDiv.appendChild(highlight);
-            addSidebarItem(matchText, pageNumber, sheetTitle, sheetRevision, highlight, pdfRect);
+            addSidebarItem(matchText, pageNumber, sheetTitle, sheetRevision, highlight, pdfRect, classifyTagType(matchText));
         }
 
         // Actuated valve fallback for split text items, e.g. "35PSV" on one line and "9015A" on the next.
@@ -766,11 +1652,6 @@ async function processPage(pdf, pageNumber) {
                 highlight.style.height = `${fontHeight}px`;
                 highlight.style.transform = `rotate(${angleDeg}deg) translateY(-100%)`;
 
-                highlight.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    copyToClipboard(matchText);
-                });
-
                 const pdfAngleRad = Math.atan2(item.transform[1], item.transform[0]);
                 const pdfAngleDeg = pdfAngleRad * (180 / Math.PI);
                 const pdfHeight = Math.sqrt(item.transform[2]*item.transform[2] + item.transform[3]*item.transform[3]);
@@ -784,7 +1665,7 @@ async function processPage(pdf, pageNumber) {
                 };
 
                 pageDiv.appendChild(highlight);
-                addSidebarItem(matchText, pageNumber, sheetTitle, sheetRevision, highlight, pdfRect);
+                addSidebarItem(matchText, pageNumber, sheetTitle, sheetRevision, highlight, pdfRect, classifyTagType(matchText));
             }
         }
     }
@@ -806,20 +1687,144 @@ function setPidTableExtractionStatus(text, state = '') {
 }
 
 function showResultsView(view) {
+    const previousView = activeResultsView;
     const showTables = view === 'tables' && pidTableRows.length > 0;
+    const showValves = view === 'valves' && hasValveLineResults();
+    activeResultsView = showTables ? 'tables' : showValves ? 'valves' : 'tags';
+    document.body.classList.toggle('results-view-valves', showValves);
 
-    if (tagResultsView) tagResultsView.hidden = showTables;
+    if (tagResultsView) tagResultsView.hidden = showTables || showValves;
+    if (valveLineResultsView) valveLineResultsView.hidden = !showValves;
     if (pidTableResultsView) pidTableResultsView.hidden = !showTables;
-    if (resultsSidebarTitle) resultsSidebarTitle.textContent = showTables ? 'P&ID table values' : 'Found tags';
+    if (resultsSidebarTitle) {
+        resultsSidebarTitle.textContent = showTables
+            ? 'P&ID table values'
+            : showValves ? 'Valve–line connections' : 'Found tags';
+    }
 
     if (showTagsViewBtn) {
-        showTagsViewBtn.classList.toggle('active', !showTables);
-        showTagsViewBtn.setAttribute('aria-selected', showTables ? 'false' : 'true');
+        showTagsViewBtn.classList.toggle('active', !showTables && !showValves);
+        showTagsViewBtn.setAttribute('aria-selected', !showTables && !showValves ? 'true' : 'false');
+    }
+    if (showValveLineViewBtn) {
+        showValveLineViewBtn.classList.toggle('active', showValves);
+        showValveLineViewBtn.setAttribute('aria-selected', showValves ? 'true' : 'false');
+        showValveLineViewBtn.disabled = !hasValveLineResults();
     }
     if (showPidTableViewBtn) {
         showPidTableViewBtn.classList.toggle('active', showTables);
         showPidTableViewBtn.setAttribute('aria-selected', showTables ? 'true' : 'false');
         showPidTableViewBtn.disabled = pidTableRows.length === 0;
+    }
+
+    if (showValves) renderValveLineResults();
+    if (previousView !== activeResultsView) {
+        const resultsContainer = document.getElementById('results-container');
+        if (resultsContainer) resultsContainer.scrollTop = 0;
+    }
+
+    syncResultsRail(
+        !document.body.classList.contains('results-sidebar-collapsed'),
+        getActiveResultsRailButtonId()
+    );
+}
+
+function valveLineOptions(item) {
+    if (!item || item.associationStatus === 'unassigned') return [];
+
+    const options = [];
+    const seen = new Set();
+    const addOption = (label, lineId) => {
+        const normalizedLabel = String(label || '').trim();
+        const normalizedId = Number(lineId);
+        if (!normalizedLabel || !Number.isInteger(normalizedId) || seen.has(normalizedLabel)) return;
+        seen.add(normalizedLabel);
+        options.push({ label: normalizedLabel, lineId: normalizedId });
+    };
+
+    addOption(item.associatedLineTag, item.associatedLineId);
+    for (const candidate of item.associationCandidates || []) {
+        addOption(candidate.lineTag, candidate.lineOccurrenceId);
+    }
+    return options.slice(0, item.associationStatus === 'review' ? 2 : 1);
+}
+
+function renderValveLineResults() {
+    const tbody = valveLineResults?.querySelector('tbody');
+    if (!tbody) return;
+    tbody.replaceChildren();
+
+    const valves = allFoundTags.filter(isValveAuditTag).sort((a, b) => {
+        const order = { review: 0, unassigned: 1, assigned: 2 };
+        return (order[a.associationStatus] ?? 3) - (order[b.associationStatus] ?? 3) || a.tag.localeCompare(b.tag);
+    });
+    if (valveLineResultsSummary) {
+        valveLineResultsSummary.textContent = `${valveAssociationCounts.assigned} linked · ${valveAssociationCounts.review} review · ${valveAssociationCounts.unassigned} no link`;
+    }
+    const linkableCount = valves.filter(item => valveLineOptions(item).length).length;
+    if (showAllValveLinksBtn) {
+        const label = linkableCount ? `Show ${linkableCount} links` : 'Show links';
+        showAllValveLinksBtn.dataset.defaultLabel = label;
+        showAllValveLinksBtn.textContent = showAllValveLinksBtn.getAttribute('aria-pressed') === 'true' ? 'Hide links' : label;
+        showAllValveLinksBtn.disabled = linkableCount === 0;
+    }
+    if (!linkableCount) clearValveLineConnectors();
+
+    for (const item of valves) {
+        const tr = document.createElement('tr');
+        tr.dataset.valveId = String(item.id);
+        tr.className = `valve-line-row status-${item.associationStatus || 'unassigned'}`;
+        tr.classList.toggle('is-selected', item.id === activeValveLineFocus.valveId);
+        tr.title = 'Show valve and line on P&ID';
+
+        const valveCell = document.createElement('td');
+        const valveTag = document.createElement('strong');
+        valveTag.textContent = item.tag;
+        const page = document.createElement('small');
+        page.textContent = `Page ${item.page}`;
+        valveCell.append(valveTag, page);
+
+        const lineCell = document.createElement('td');
+        const lineOptions = valveLineOptions(item);
+        if (lineOptions.length) {
+            lineOptions.forEach((line, index) => {
+                if (index > 0) lineCell.appendChild(document.createElement('br'));
+                const lineButton = document.createElement('button');
+                lineButton.type = 'button';
+                lineButton.dataset.lineId = String(line.lineId);
+                lineButton.textContent = line.label;
+                lineButton.title = 'Show this valve and line on P&ID';
+                lineCell.appendChild(lineButton);
+            });
+        } else {
+            lineCell.textContent = '—';
+        }
+        if (item.associationStatus !== 'unassigned' && item.associationConfidence !== null && Number.isFinite(Number(item.associationConfidence))) {
+            const confidence = document.createElement('small');
+            confidence.textContent = `${Math.round(Number(item.associationConfidence) * 100)}%`;
+            lineCell.appendChild(confidence);
+        }
+
+        const statusCell = document.createElement('td');
+        const info = valveAssociationStatusInfo(item.associationStatus, item.associationReason);
+        const badge = document.createElement('span');
+        badge.className = `trace-status-badge valve-status-${info.status}`;
+        badge.textContent = info.label;
+        badge.title = info.title;
+        statusCell.appendChild(badge);
+        if (lineOptions.length) {
+            const showLinkButton = document.createElement('button');
+            showLinkButton.type = 'button';
+            showLinkButton.className = 'valve-line-show-link';
+            showLinkButton.dataset.showLinkLineId = String(lineOptions[0].lineId);
+            showLinkButton.textContent = 'Show link';
+            showLinkButton.title = 'Draw valve-to-line guide';
+            showLinkButton.setAttribute('aria-label', `Show link from ${item.tag} to ${lineOptions[0].label}`);
+            statusCell.appendChild(showLinkButton);
+        }
+
+        tr.append(valveCell, lineCell, statusCell);
+        tbody.appendChild(tr);
     }
 }
 
@@ -1557,7 +2562,7 @@ async function extractPidTables() {
         }
 
         if (exportPidTablesBtn) exportPidTablesBtn.disabled = false;
-        document.body.classList.remove('results-sidebar-collapsed');
+        setResultsSidebarOpen(true);
         showResultsView('tables');
 
         const reviewCount = pidTableRows.filter(row => row.status !== 'complete').length;
@@ -1713,7 +2718,7 @@ function csvCell(value) {
     return `"${String(value ?? '').replace(/"/g, '""')}"`;
 }
 
-function exportPidTablesToCsv() {
+async function exportPidTablesToCsv() {
     if (!pidTableRows.length) {
         showToast('Extract P&ID table data first', 'warning');
         return;
@@ -1739,15 +2744,15 @@ function exportPidTablesToCsv() {
 
     const csv = rows.map(row => row.map(csvCell).join(',')).join('\r\n');
     const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${window.currentPDFName || 'pid'}_table_values.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    showToast(`Exported ${pidTableRows.length} table row(s)`, 'success');
+    const fileName = `${window.currentPDFName || 'pid'}_table_values.csv`;
+    downloadBlob(blob, fileName);
+    try {
+        const savedToFolder = await saveProjectArtifact(blob, '03_Reports', fileName, 'report');
+        showToast(`Exported ${pidTableRows.length} table row(s)${savedToFolder ? ' and saved to project Reports' : ''}`, 'success');
+    } catch (error) {
+        console.warn('Could not save table report to project folder', error);
+        showToast(`Exported ${pidTableRows.length} table row(s)`, 'success');
+    }
 }
 
 function updateFooterForVisiblePage() {
@@ -1816,8 +2821,9 @@ function updateFooterList(pageNum) {
     });
 }
 
-function addSidebarItem(text, pageNum, title, revision, highlightElement, pdfRect) {
+function addSidebarItem(text, pageNum, title, revision, highlightElement, pdfRect, tagType = 'unknown') {
     const id = allFoundTags.length;
+    if (highlightElement) highlightElement.classList.add(`tag-type-${tagType}`);
 
     allFoundTags.push({ 
         id: id, 
@@ -1825,7 +2831,22 @@ function addSidebarItem(text, pageNum, title, revision, highlightElement, pdfRec
         page: pageNum, 
         title: title,
         revision: revision,
+        tagType: tagType,
         status: 'Pending',
+        traceStatus: 'untraced',
+        traceSummary: '',
+        traceReason: '',
+        traceDetails: null,
+        traceComment: '',
+        associationStatus: tagType === 'valve' || tagType === 'actuated' ? 'unassigned' : '',
+        associatedLineTag: '',
+        associatedLineId: null,
+        associationConfidence: null,
+        associationReason: '',
+        associationMethod: '',
+        associationCandidates: [],
+        associatedValves: [],
+        valvesForReview: [],
         element: highlightElement,
         pdfRect: pdfRect
     });
@@ -1949,6 +2970,9 @@ function createGroupedView(tags) {
         if (statuses.includes('Incorrect')) g.status = 'Incorrect';
         else if (statuses.length > 0 && statuses.every(s => s === 'Correct')) g.status = 'Correct';
         else g.status = 'Pending';
+        g.traceStatus = summarizeTraceStatus(g.occurrences);
+        g.associationStatus = summarizeValveAssociationStatus(g.occurrences);
+        g.traceCommentCount = g.occurrences.filter(o => String(o.traceComment || '').trim()).length;
     }
 
     // Stable sort for nicer UX: by tag, then by first page.
@@ -1963,21 +2987,209 @@ function createGroupedView(tags) {
     return groups;
 }
 
+function isTraceLineTag(item) {
+    return item && (item.tagType === 'line' || TABLE_LINE_TAG_RE.test(String(item.tag || '')));
+}
+
+function isValveAuditTag(item) {
+    return item && (item.tagType === 'valve' || item.tagType === 'actuated');
+}
+
+function summarizeValveAssociationStatus(items) {
+    const valves = (items || []).filter(isValveAuditTag);
+    if (!valves.length) return '';
+    const statuses = valves.map(item => item.associationStatus || 'unassigned');
+    if (statuses.includes('review')) return 'review';
+    if (statuses.includes('unassigned')) return 'unassigned';
+    return statuses.every(status => status === 'assigned') ? 'assigned' : 'unassigned';
+}
+
+function summarizeTraceStatus(items) {
+    const statuses = (items || []).map(item => item.traceStatus || 'untraced');
+    if (statuses.includes('no')) return 'no';
+    if (statuses.includes('review')) return 'review';
+    if (statuses.includes('running')) return 'running';
+    if (statuses.length > 0 && statuses.every(status => status === 'yes')) return 'yes';
+    return 'untraced';
+}
+
+function traceStatusInfo(status, reason = '') {
+    const normalized = ['yes', 'review', 'no', 'running'].includes(status) ? status : 'untraced';
+    const values = {
+        yes: { label: 'YES', title: 'Line tracing completed without an ambiguity stop.' },
+        review: { label: 'REVIEW', title: 'Line tracing reached a tee, crossing, or uncertain continuation.' },
+        no: { label: 'NO', title: 'No usable line geometry was found, or tracing failed.' },
+        running: { label: 'RUN', title: 'Line tracing is in progress.' },
+        untraced: { label: '—', title: 'Line tracing has not been run.' }
+    };
+    const info = values[normalized];
+    return {
+        status: normalized,
+        label: info.label,
+        title: reason ? `${info.title} ${reason}` : info.title
+    };
+}
+
+function traceStatusBadgeMarkup(status, reason = '', extraAttributes = '') {
+    const info = traceStatusInfo(status, reason);
+    return `<span class="trace-status-badge trace-status-${info.status}" title="${escapeHtml(info.title)}" ${extraAttributes}>${info.label}</span>`;
+}
+
+function valveAssociationStatusInfo(status, reason = '') {
+    const normalized = ['assigned', 'review', 'unassigned'].includes(status) ? status : 'unassigned';
+    const values = {
+        assigned: { label: 'LINKED', title: 'Valve is linked to one uniquely nearest traced line.' },
+        review: { label: 'REVIEW', title: 'Valve-to-line association needs engineering review.' },
+        unassigned: { label: 'NO LINK', title: 'Valve is not linked to a traced line.' }
+    };
+    const info = values[normalized];
+    return {
+        status: normalized,
+        label: info.label,
+        title: reason ? `${info.title} ${String(reason).replace(/-/g, ' ')}.` : info.title
+    };
+}
+
+function valveAssociationBadgeMarkup(status, reason = '', extraAttributes = '') {
+    const info = valveAssociationStatusInfo(status, reason);
+    return `<span class="trace-status-badge valve-status-${info.status}" title="${escapeHtml(info.title)}" ${extraAttributes}>${info.label}</span>`;
+}
+
+function analysisBadgeMarkup(item) {
+    if (isTraceLineTag(item)) {
+        return traceStatusBadgeMarkup(item.traceStatus, item.traceReason, `data-trace-status-badge="${item.id}"`);
+    }
+    if (isValveAuditTag(item)) {
+        return valveAssociationBadgeMarkup(
+            item.associationStatus,
+            item.associationReason,
+            `data-valve-status-badge="${item.id}"`
+        );
+    }
+    return '';
+}
+
+function itemAnalysisSummary(item) {
+    if (isTraceLineTag(item)) {
+        const parts = [];
+        const traceSummary = String(item.traceSummary || '').trim();
+        if (traceSummary) parts.push(traceSummary);
+        const assignedCount = item.associatedValves?.length || 0;
+        const reviewCount = item.valvesForReview?.length || 0;
+        if (assignedCount || reviewCount) {
+            parts.push(`Valves: ${assignedCount} linked${reviewCount ? `, ${reviewCount} review` : ''}`);
+        }
+        return parts.join(' · ');
+    }
+
+    if (isValveAuditTag(item)) {
+        if (item.associationStatus === 'assigned') {
+            const confidence = Number.isFinite(Number(item.associationConfidence))
+                ? ` · ${Math.round(Number(item.associationConfidence) * 100)}%`
+                : '';
+            return `Line ${item.associatedLineTag || 'unknown'}${confidence}`;
+        }
+        const candidateNames = Array.from(new Set((item.associationCandidates || [])
+            .map(candidate => candidate.lineTag)
+            .filter(Boolean)));
+        if (item.associationStatus === 'review' && candidateNames.length) {
+            return `Candidate lines: ${candidateNames.slice(0, 3).join(', ')}`;
+        }
+        return 'No traced line association';
+    }
+
+    return '';
+}
+
+function groupedAnalysisSummary(group) {
+    if (group.occurrences.some(isTraceLineTag)) {
+        const summaries = Array.from(new Set(group.occurrences.map(itemAnalysisSummary).filter(Boolean)));
+        return summaries.length === 1
+            ? summaries[0]
+            : summaries.length > 1
+                ? `${summaries.length} trace/valve results — use Count all for details`
+                : '';
+    }
+    if (group.occurrences.some(isValveAuditTag)) {
+        const lines = Array.from(new Set(group.occurrences.map(item => item.associatedLineTag).filter(Boolean)));
+        if (group.associationStatus === 'assigned' && lines.length === 1) return `Line ${lines[0]}`;
+        if (lines.length) return `Line candidates: ${lines.join(', ')}`;
+        return 'No traced line association';
+    }
+    return '';
+}
+
+function traceCommentButtonMarkup(item) {
+    const comment = String(item.traceComment || '');
+    const hasComment = Boolean(comment.trim());
+    const label = hasComment ? 'Edit trace comment' : 'Add trace comment';
+    return `<button class="trace-comment-toggle${hasComment ? ' has-comment' : ''}" type="button" data-tag-id="${item.id}" aria-expanded="${hasComment ? 'true' : 'false'}" aria-label="${label}" title="${label}">💬</button>`;
+}
+
+function traceCommentEditorMarkup(item, placeholder = 'Add a note about this trace') {
+    const comment = String(item.traceComment || '');
+    const hasComment = Boolean(comment.trim());
+    return `
+        <div class="trace-comment-editor" data-trace-comment-editor="${item.id}"${hasComment ? '' : ' hidden'}>
+            <input class="trace-comment-input" type="text" data-tag-id="${item.id}" value="${escapeHtml(comment)}" placeholder="${escapeHtml(placeholder)}" aria-label="Comment for ${escapeHtml(item.tag)}">
+        </div>
+    `;
+}
+
+function wireTraceCommentEditor(container, item) {
+    const toggle = container.querySelector('.trace-comment-toggle');
+    const editor = container.querySelector(`[data-trace-comment-editor="${item.id}"]`);
+    const input = editor?.querySelector('.trace-comment-input');
+    if (!toggle || !editor || !input) return;
+
+    toggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const isOpen = !editor.hidden;
+        editor.hidden = isOpen;
+        toggle.setAttribute('aria-expanded', String(!isOpen));
+        if (!isOpen) input.focus();
+    });
+
+    input.addEventListener('click', (event) => event.stopPropagation());
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            editor.hidden = true;
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.focus();
+            event.stopPropagation();
+        }
+    });
+    input.addEventListener('input', () => {
+        item.traceComment = input.value;
+        const hasComment = Boolean(input.value.trim());
+        toggle.classList.toggle('has-comment', hasComment);
+        toggle.title = hasComment ? 'Edit trace comment' : 'Add trace comment';
+        updateTraceResultsToolbar();
+    });
+}
+
 function renderSidebarOccurrenceItem(item, targetList = resultList, showMeta = true) {
     const li = document.createElement('li');
     li.className = 'result-item';
     li.dataset.tagId = item.id;
 
     const safeTitle = item.title || 'Unknown Title';
+    const analysisSummary = itemAnalysisSummary(item);
     li.innerHTML = `
         <div class="result-main">
-            <div class="tag" title="Click to copy">${item.tag}</div>
+            <div class="tag-line">
+                <div class="tag" title="Click to jump to this tag in the PDF">${escapeHtml(item.tag)}</div>
+            </div>
             <div class="meta">Sheet: ${escapeHtml(safeTitle)} · Page: ${item.page}</div>
+            <div class="trace-summary" data-trace-summary="${item.id}"${analysisSummary ? '' : ' hidden'}>${escapeHtml(analysisSummary)}</div>
         </div>
         <div class="result-actions">
+            ${analysisBadgeMarkup(item)}
+            ${traceCommentButtonMarkup(item)}
             <button class="btn-mini correct" title="Approve" onclick="setStatus(event, ${item.id}, 'Correct', this)">✓</button>
             <button class="btn-mini incorrect" title="Reject" onclick="setStatus(event, ${item.id}, 'Incorrect', this)">✗</button>
         </div>
+        ${traceCommentEditorMarkup(item)}
     `;
 
     if (!showMeta) li.querySelector('.meta')?.remove();
@@ -1985,29 +3197,11 @@ function renderSidebarOccurrenceItem(item, targetList = resultList, showMeta = t
     // Apply current status styling
     applyStatusClasses(li, item.status);
     updateStatusButtonsForContainer(li, item.status);
-
-    // Add click to copy for the tag element
-    const tagElement = li.querySelector('.tag');
-    if (tagElement) {
-        tagElement.style.cursor = 'pointer';
-        tagElement.addEventListener('click', (e) => {
-            e.stopPropagation();
-            copyToClipboard(item.tag);
-        });
-    }
+    wireTraceCommentEditor(li, item);
 
     li.addEventListener('click', () => {
-        // Prefer scrolling to the actual hit, not only the page.
-        if (item.element) {
-            item.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-            item.element.classList.add('active');
-            setTimeout(() => item.element?.classList.remove('active'), 700);
-            return;
-        }
-
-        // Fallback: scroll to page container
-        const pageDiv = document.getElementById(`page-${item.page}`);
-        pageDiv?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        window.PipeTracing?.selectTag?.(item);
+        focusPdfTag(item);
     });
 
     targetList.appendChild(li);
@@ -2016,6 +3210,16 @@ function renderSidebarOccurrenceItem(item, targetList = resultList, showMeta = t
 function renderSidebarGroupedItem(group, targetList = resultList, showMeta = true) {
     const li = document.createElement('li');
     li.className = 'result-item';
+    const firstOccurrence = group.occurrences[0];
+    const commentLabel = group.traceCommentCount
+        ? `${group.traceCommentCount} trace comment${group.traceCommentCount === 1 ? '' : 's'}`
+        : 'Add trace comment';
+    const analysisSummary = groupedAnalysisSummary(group);
+    const groupBadge = firstOccurrence && isTraceLineTag(firstOccurrence)
+        ? traceStatusBadgeMarkup(group.traceStatus, '', `data-trace-group-status="${escapeHtml(group.tag)}"`)
+        : firstOccurrence && isValveAuditTag(firstOccurrence)
+            ? valveAssociationBadgeMarkup(group.associationStatus, '', `data-valve-group-status="${escapeHtml(group.tag)}"`)
+            : '';
 
     const titles = Array.from(group.titles);
     const titleLabel = titles.length ? titles.join(' | ') : 'Unknown Title';
@@ -2023,13 +3227,19 @@ function renderSidebarGroupedItem(group, targetList = resultList, showMeta = tru
 
     li.innerHTML = `
         <div class="result-main">
-            <div class="tag" title="Click to copy">${group.tag}</div>
+            <div class="tag-line">
+                <div class="tag" title="Click to jump to this tag in the PDF">${escapeHtml(group.tag)}</div>
+            </div>
             <div class="meta">Sheets: ${escapeHtml(titleLabel)} · Pages: ${pages.join(', ')} · Count: ${group.occurrences.length}</div>
+            <div class="trace-summary"${analysisSummary ? '' : ' hidden'}>${escapeHtml(analysisSummary)}</div>
         </div>
         <div class="result-actions">
+            ${groupBadge}
+            ${firstOccurrence ? `<button class="trace-comment-toggle${group.traceCommentCount ? ' has-comment' : ''}" type="button" data-tag-id="${firstOccurrence.id}" aria-expanded="${group.traceCommentCount ? 'true' : 'false'}" aria-label="${commentLabel}" title="${commentLabel}">💬</button>` : ''}
             <button class="btn-mini correct" title="Approve all" data-tag="${escapeHtml(group.tag)}">✓</button>
             <button class="btn-mini incorrect" title="Reject all" data-tag="${escapeHtml(group.tag)}">✗</button>
         </div>
+        ${firstOccurrence ? traceCommentEditorMarkup(firstOccurrence, 'Comment on this line occurrence') : ''}
     `;
 
     if (!showMeta) li.querySelector('.meta')?.remove();
@@ -2048,28 +3258,12 @@ function renderSidebarGroupedItem(group, targetList = resultList, showMeta = tru
 
     applyStatusClasses(li, group.status);
     updateStatusButtonsForContainer(li, group.status);
-
-    // Add click to copy for the tag element
-    const tagElement = li.querySelector('.tag');
-    if (tagElement) {
-        tagElement.style.cursor = 'pointer';
-        tagElement.addEventListener('click', (e) => {
-            e.stopPropagation();
-            copyToClipboard(group.tag);
-        });
-    }
+    if (firstOccurrence) wireTraceCommentEditor(li, firstOccurrence);
 
     li.addEventListener('click', () => {
-        // Jump to first occurrence (best effort: actual highlight if present)
+        window.PipeTracing?.selectTag?.(group.occurrences[0]);
         const first = group.occurrences[0];
-        if (!first) return;
-        if (first.element) {
-            first.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-            first.element.classList.add('active');
-            setTimeout(() => first.element?.classList.remove('active'), 700);
-            return;
-        }
-        document.getElementById(`page-${first.page}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        focusPdfTag(first);
     });
 
     targetList.appendChild(li);
@@ -2128,6 +3322,241 @@ function escapeHtml(s) {
         .replace(/'/g, '&#039;');
 }
 
+function updateTraceResultsToolbar() {
+    if (!traceResultsToolbar || !traceResultsSummary) return;
+
+    const lineTags = allFoundTags.filter(isTraceLineTag);
+    const valveTags = allFoundTags.filter(isValveAuditTag);
+    if (!pipeTracingEnabled || (!lineTags.length && !valveTags.length)) {
+        traceResultsToolbar.hidden = true;
+        if (copyTraceResultsBtn) copyTraceResultsBtn.disabled = true;
+        syncResultsRail(!document.body.classList.contains('results-sidebar-collapsed'), getActiveResultsRailButtonId());
+        return;
+    }
+
+    const counts = lineTags.reduce((result, item) => {
+        const status = item.traceStatus || 'untraced';
+        result[status] = (result[status] || 0) + 1;
+        return result;
+    }, { yes: 0, review: 0, no: 0, running: 0, untraced: 0 });
+
+    valveAssociationCounts = valveTags.reduce((result, item) => {
+        const status = item.associationStatus || 'unassigned';
+        result[status] = (result[status] || 0) + 1;
+        return result;
+    }, { assigned: 0, review: 0, unassigned: 0 });
+
+    traceResultsToolbar.hidden = false;
+    const lineParts = [
+        counts.yes ? `${counts.yes} yes` : '',
+        counts.review ? `${counts.review} review` : '',
+        counts.no ? `${counts.no} no` : '',
+        counts.untraced ? `${counts.untraced} pending` : ''
+    ].filter(Boolean);
+    const valveParts = [
+        valveAssociationCounts.assigned ? `${valveAssociationCounts.assigned} linked` : '',
+        valveAssociationCounts.review ? `${valveAssociationCounts.review} review` : '',
+        valveAssociationCounts.unassigned ? `${valveAssociationCounts.unassigned} no link` : ''
+    ].filter(Boolean);
+    const lineSummary = lineTags.length ? `Lines ${lineParts.join(' · ')}` : 'Lines none';
+    const valveSummary = valveTags.length ? `Valves ${valveParts.join(' · ')}` : 'Valves none';
+    traceResultsSummary.textContent = `${lineSummary} | ${valveSummary}`;
+    if (copyTraceResultsBtn) {
+        copyTraceResultsBtn.disabled = !valveTags.length && !lineTags.some(item =>
+            (item.traceStatus && item.traceStatus !== 'untraced') || String(item.traceComment || '').trim()
+        );
+    }
+    if (showValveLineViewBtn) showValveLineViewBtn.disabled = !hasValveLineResults();
+    renderValveLineResults();
+    syncResultsRail(!document.body.classList.contains('results-sidebar-collapsed'), getActiveResultsRailButtonId());
+}
+
+function updateTraceStatusUI(item) {
+    if (!item) return;
+    const row = resultList?.querySelector(`[data-tag-id="${item.id}"]`);
+    if (!row) {
+        if (duplicateMode === 'unique') rebuildSidebar();
+        updateTraceResultsToolbar();
+        return;
+    }
+
+    const badge = row.querySelector(`[data-trace-status-badge="${item.id}"]`);
+    if (badge) {
+        const info = traceStatusInfo(item.traceStatus, item.traceReason);
+        badge.className = `trace-status-badge trace-status-${info.status}`;
+        badge.textContent = info.label;
+        badge.title = info.title;
+    }
+    const summary = row.querySelector(`[data-trace-summary="${item.id}"]`);
+    if (summary) {
+        const text = itemAnalysisSummary(item);
+        summary.textContent = text;
+        summary.hidden = !text;
+    }
+    updateTraceResultsToolbar();
+}
+
+function handlePipeTraceResult(event) {
+    const detail = event?.detail || {};
+    const item = allFoundTags.find(candidate => candidate.id === Number(detail.tagId));
+    if (!item) return;
+
+    item.traceStatus = detail.status || 'untraced';
+    item.traceSummary = detail.summary || '';
+    item.traceReason = detail.reason || '';
+    item.traceDetails = detail;
+    updateTraceStatusUI(item);
+}
+
+function handlePipeTraceReset() {
+    clearValveLineConnectionFocus();
+    activeValveLineFocus = { valveId: null, lineId: null };
+    for (const item of allFoundTags) {
+        item.traceStatus = 'untraced';
+        item.traceSummary = '';
+        item.traceReason = '';
+        item.traceDetails = null;
+        item.traceComment = '';
+        item.associationStatus = isValveAuditTag(item) ? 'unassigned' : '';
+        item.associatedLineTag = '';
+        item.associatedLineId = null;
+        item.associationConfidence = null;
+        item.associationReason = '';
+        item.associationMethod = '';
+        item.associationCandidates = [];
+        item.associatedValves = [];
+        item.valvesForReview = [];
+    }
+    valveAssociationCounts = { assigned: 0, review: 0, unassigned: allFoundTags.filter(isValveAuditTag).length };
+    rebuildSidebar();
+    updateTraceResultsToolbar();
+    if (activeResultsView === 'valves') showResultsView('tags');
+}
+
+function handlePipeTracingState(event) {
+    pipeTracingEnabled = Boolean(event?.detail?.enabled);
+    updateTraceResultsToolbar();
+}
+
+function handlePipeValveAssociations(event) {
+    const detail = event?.detail || {};
+    const associations = Array.isArray(detail.associations) ? detail.associations : [];
+    const byValveId = new Map(associations.map(association => [Number(association.occurrenceId), association]));
+
+    for (const item of allFoundTags) {
+        if (isValveAuditTag(item)) {
+            const association = byValveId.get(item.id);
+            item.associationStatus = association?.status || 'unassigned';
+            item.associatedLineTag = association?.lineTag || '';
+            item.associatedLineId = association?.lineOccurrenceId ?? null;
+            item.associationConfidence = association?.confidence ?? null;
+            item.associationReason = association?.reason || '';
+            item.associationMethod = association?.method || '';
+            item.associationCandidates = Array.isArray(association?.candidates) ? association.candidates : [];
+        }
+        if (isTraceLineTag(item)) {
+            item.associatedValves = [];
+            item.valvesForReview = [];
+        }
+    }
+
+    for (const lineSummary of detail.lineSummaries || []) {
+        const lineItem = allFoundTags.find(item => item.id === Number(lineSummary.occurrenceId));
+        if (!lineItem) continue;
+        lineItem.associatedValves = (lineSummary.assignedValveIds || [])
+            .map(id => byValveId.get(Number(id)))
+            .filter(Boolean);
+        lineItem.valvesForReview = (lineSummary.reviewValveIds || [])
+            .map(id => byValveId.get(Number(id)))
+            .filter(Boolean);
+    }
+
+    valveAssociationCounts = {
+        assigned: Number(detail.counts?.assigned) || 0,
+        review: Number(detail.counts?.review) || 0,
+        unassigned: Number(detail.counts?.unassigned) || 0
+    };
+    rebuildSidebar();
+    updateTraceResultsToolbar();
+    renderValveLineResults();
+}
+
+function buildTraceReport() {
+    const lineTags = allFoundTags.filter(isTraceLineTag);
+    const valveTags = allFoundTags.filter(isValveAuditTag);
+    const counts = lineTags.reduce((result, item) => {
+        const status = item.traceStatus || 'untraced';
+        result[status] = (result[status] || 0) + 1;
+        return result;
+    }, { yes: 0, review: 0, no: 0, untraced: 0 });
+    const title = window.currentPDFName || 'P&ID';
+    const valveCounts = valveTags.reduce((result, item) => {
+        const status = item.associationStatus || 'unassigned';
+        result[status] = (result[status] || 0) + 1;
+        return result;
+    }, { assigned: 0, review: 0, unassigned: 0 });
+    const lines = [
+        `P&ID line and valve report — ${title}`,
+        `LINES | YES: ${counts.yes} | REVIEW: ${counts.review} | NO: ${counts.no} | PENDING: ${counts.untraced}`,
+        `VALVES | LINKED: ${valveCounts.assigned} | REVIEW: ${valveCounts.review} | UNLINKED: ${valveCounts.unassigned}`,
+        ''
+    ];
+
+    lines.push('Line register');
+    lineTags.forEach((item, index) => {
+        const info = traceStatusInfo(item.traceStatus, item.traceReason);
+        const summary = String(item.traceSummary || 'Not checked').replace(/\s+/g, ' ').trim();
+        const comment = String(item.traceComment || '').replace(/\s+/g, ' ').trim();
+        const linkedValves = (item.associatedValves || []).map(valve => valve.valveTag).join(', ') || 'none';
+        const reviewValves = (item.valvesForReview || []).map(valve => valve.valveTag).join(', ') || 'none';
+        lines.push(`${index + 1}. ${item.tag} | ${info.label} | Page ${item.page} | ${summary} | Linked valves: ${linkedValves} | Valve review: ${reviewValves}${comment ? ` | Comment: ${comment}` : ''}`);
+    });
+
+    lines.push('', 'Valve register');
+    valveTags.forEach((item, index) => {
+        const info = valveAssociationStatusInfo(item.associationStatus, item.associationReason);
+        const candidates = Array.from(new Set((item.associationCandidates || [])
+            .map(candidate => candidate.lineTag)
+            .filter(Boolean)))
+            .join(', ') || 'none';
+        const confidence = item.associationConfidence !== null && Number.isFinite(Number(item.associationConfidence))
+            ? `${Math.round(Number(item.associationConfidence) * 100)}%`
+            : 'n/a';
+        const comment = String(item.traceComment || '').replace(/\s+/g, ' ').trim();
+        lines.push(`${index + 1}. ${item.tag} | ${item.tagType} | ${info.label} | Page ${item.page} | Line: ${item.associatedLineTag || 'unassigned'} | Confidence: ${confidence} | Candidates: ${candidates} | Reason: ${item.associationReason || 'not evaluated'}${comment ? ` | Comment: ${comment}` : ''}`);
+    });
+    return lines.join('\n');
+}
+
+async function copyTraceReport() {
+    const report = buildTraceReport();
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(report);
+        } else {
+            const helper = document.createElement('textarea');
+            helper.value = report;
+            helper.setAttribute('readonly', '');
+            helper.style.position = 'fixed';
+            helper.style.opacity = '0';
+            document.body.appendChild(helper);
+            helper.select();
+            document.execCommand('copy');
+            helper.remove();
+        }
+        showToast('Trace report copied to clipboard', 'success');
+    } catch (error) {
+        console.error('Could not copy trace report:', error);
+        showToast('Could not copy trace report', 'error');
+    }
+}
+
+window.addEventListener('pipe-trace-result', handlePipeTraceResult);
+window.addEventListener('pipe-trace-reset', handlePipeTraceReset);
+window.addEventListener('pipe-tracing-state', handlePipeTracingState);
+window.addEventListener('pipe-valve-associations', handlePipeValveAssociations);
+if (copyTraceResultsBtn) copyTraceResultsBtn.addEventListener('click', copyTraceReport);
+
 function escapeJs(s) {
     // Safe for wrapping in single quotes inside HTML onclick.
     return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -2181,99 +3610,113 @@ function printPDF() {
     }
 }
 
-function exportToCSV() {
+async function exportToCSV() {
     if (allFoundTags.length === 0) {
         alert("No tags found.");
         return;
     }
-    let csvContent = "data:text/csv;charset=utf-8,";
+    const header = [
+        'Tag Number',
+        'Tag Type',
+        'Sheet Title',
+        'Page Number',
+        'Occurrences',
+        'Revision',
+        'Review Status',
+        'Line Trace Status',
+        'Associated Line',
+        'Valve Association Status',
+        'Association Confidence',
+        'Association Method',
+        'Association Reason',
+        'Candidate Lines',
+        'Linked Valves',
+        'Trace / Association Summary',
+        'Comment'
+    ];
+    const rows = [header];
     if (duplicateMode === 'unique') {
-        csvContent += "Tag Number,Sheet Title(s),Page Number(s),Occurrences,Revision,Review Status\n";
         const groups = createGroupedView(allFoundTags);
         groups.forEach(g => {
             const titles = Array.from(g.titles).join(" | ");
             const pages = Array.from(g.pages).sort((a, b) => a - b).join(";");
             const revisions = Array.from(g.revisions).join(" | ");
-            const safeTitles = `"${titles.replace(/"/g, '""')}"`;
-            csvContent += `${g.tag},${safeTitles},"${pages}",${g.occurrences.length},${revisions},${g.status}\n`;
+            const tagTypes = Array.from(new Set(g.occurrences.map(item => item.tagType).filter(Boolean))).join(' | ');
+            const associatedLines = Array.from(new Set(g.occurrences.map(item => item.associatedLineTag).filter(Boolean))).join(' | ');
+            const confidences = g.occurrences
+                .filter(item => item.associationConfidence !== null && item.associationConfidence !== '')
+                .map(item => Number(item.associationConfidence))
+                .filter(Number.isFinite);
+            const linkedValves = Array.from(new Set(g.occurrences
+                .flatMap(item => item.associatedValves || [])
+                .map(valve => valve.valveTag)
+                .filter(Boolean)))
+                .join(' | ');
+            const comments = Array.from(new Set(g.occurrences.map(item => String(item.traceComment || '').trim()).filter(Boolean))).join(' | ');
+            rows.push([
+                g.tag,
+                tagTypes,
+                titles,
+                pages,
+                g.occurrences.length,
+                revisions,
+                g.status,
+                g.traceStatus === 'untraced' ? '' : g.traceStatus,
+                associatedLines,
+                g.associationStatus,
+                confidences.length ? Math.max(...confidences).toFixed(3) : '',
+                Array.from(new Set(g.occurrences.map(item => item.associationMethod).filter(Boolean))).join(' | '),
+                Array.from(new Set(g.occurrences.map(item => item.associationReason).filter(Boolean))).join(' | '),
+                Array.from(new Set(g.occurrences
+                    .flatMap(item => item.associationCandidates || [])
+                    .map(candidate => candidate.lineTag)
+                    .filter(Boolean)))
+                    .join(' | '),
+                linkedValves,
+                groupedAnalysisSummary(g),
+                comments
+            ]);
         });
     } else {
-        csvContent += "Tag Number,Sheet Title,Page Number,Revision,Review Status\n";
-        allFoundTags.forEach(row => {
-            const safeTitle = `"${row.title.replace(/"/g, '""')}"`;
-            csvContent += `${row.tag},${safeTitle},${row.page},${row.revision || ""},${row.status}\n`;
+        allFoundTags.forEach(item => {
+            rows.push([
+                item.tag,
+                item.tagType,
+                item.title,
+                item.page,
+                1,
+                item.revision || '',
+                item.status,
+                isTraceLineTag(item) && item.traceStatus !== 'untraced' ? item.traceStatus : '',
+                item.associatedLineTag || '',
+                isValveAuditTag(item) ? item.associationStatus || 'unassigned' : '',
+                item.associationConfidence !== null && Number.isFinite(Number(item.associationConfidence))
+                    ? Number(item.associationConfidence).toFixed(3)
+                    : '',
+                item.associationMethod || '',
+                item.associationReason || '',
+                Array.from(new Set((item.associationCandidates || [])
+                    .map(candidate => candidate.lineTag)
+                    .filter(Boolean)))
+                    .join(' | '),
+                (item.associatedValves || []).map(valve => valve.valveTag).join(' | '),
+                itemAnalysisSummary(item),
+                item.traceComment || ''
+            ]);
         });
     }
 
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", "pid_audit_results.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-}
+    const csvContent = rows.map(row => row.map(csvCell).join(',')).join('\r\n');
 
-// --- COPY TO CLIPBOARD FUNCTIONALITY ---
-function copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(() => {
-        showCopyFeedback(text);
-    }).catch(err => {
-        console.error('Failed to copy text: ', err);
-        // Fallback method
-        const textArea = document.createElement('textarea');
-        textArea.value = text;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.select();
-        try {
-            document.execCommand('copy');
-            showCopyFeedback(text);
-        } catch (err) {
-            console.error('Fallback: Could not copy text: ', err);
-        }
-        document.body.removeChild(textArea);
-    });
-}
-
-function showCopyFeedback(text) {
-    // Create temporary tooltip
-    const tooltip = document.createElement('div');
-    tooltip.textContent = `Copied: ${text}`;
-    tooltip.style.cssText = `
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: rgba(40, 167, 69, 0.95);
-        color: white;
-        padding: 12px 20px;
-        border-radius: 8px;
-        font-size: 14px;
-        font-weight: 600;
-        z-index: 10000;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        pointer-events: none;
-        animation: fadeInOut 1.5s ease-in-out;
-    `;
-    
-    document.body.appendChild(tooltip);
-    
-    setTimeout(() => {
-        document.body.removeChild(tooltip);
-    }, 1500);
-}
-
-function updateFileName(input) {
-    const fileNameSpan = document.getElementById('fileName');
-    if (input.files && input.files.length > 0) {
-        const selectedName = input.files[0].name;
-        fileNameSpan.textContent = selectedName;
-        rememberPreference(UI_PREF_KEYS.lastPdfName, selectedName);
-    } else {
-        fileNameSpan.textContent = DEFAULT_PDF_LABEL;
-        forgetPreference(UI_PREF_KEYS.lastPdfName);
+    const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8' });
+    const fileName = `${window.currentPDFName || 'pid'}_audit_results.csv`;
+    downloadBlob(blob, fileName);
+    try {
+        const savedToFolder = await saveProjectArtifact(blob, '03_Reports', fileName, 'report');
+        showToast(`Audit CSV exported${savedToFolder ? ' and saved to project Reports' : ''}`, 'success');
+    } catch (error) {
+        console.warn('Could not save audit report to project folder', error);
+        showToast('Audit CSV exported', 'success');
     }
 }
 
@@ -2315,12 +3758,6 @@ function forgetPreference(key) {
 }
 
 function restoreRememberedSelections() {
-    const fileNameSpan = document.getElementById('fileName');
-    const savedPdfName = readPreference(UI_PREF_KEYS.lastPdfName);
-    if (fileNameSpan && savedPdfName) {
-        fileNameSpan.textContent = `${savedPdfName} (last used)`;
-    }
-
     const savedLineListName = readPreference(UI_PREF_KEYS.lastLineListName);
     if (lineListFileName && savedLineListName) {
         lineListFileName.textContent = `${savedLineListName} (last used)`;
@@ -2375,7 +3812,6 @@ function normalizeTagValue(value) {
 
 function resetCompareDrawerState() {
     compareDrawerState.fileName = '';
-    compareDrawerState.sheetName = '';
     compareDrawerState.lineColumnLabel = '';
     compareDrawerState.lineColumnIndex = -1;
     compareDrawerState.lineHeaders = [];
@@ -2518,29 +3954,81 @@ function buildPidTagLookup() {
     return lookup;
 }
 
+function detectCsvDelimiter(text) {
+    const firstLine = String(text ?? '').split(/\r\n|\n|\r/, 10).find(line => line.trim()) || '';
+    const delimiters = [',', ';', '\t'];
+    const counts = new Map(delimiters.map(delimiter => [delimiter, 0]));
+    let inQuotes = false;
+
+    for (let index = 0; index < firstLine.length; index++) {
+        const character = firstLine[index];
+        if (character === '"') {
+            if (inQuotes && firstLine[index + 1] === '"') {
+                index++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if (!inQuotes && counts.has(character)) {
+            counts.set(character, counts.get(character) + 1);
+        }
+    }
+
+    return delimiters.reduce((best, delimiter) =>
+        counts.get(delimiter) > counts.get(best) ? delimiter : best, ',');
+}
+
+function parseCsvRows(text) {
+    const source = String(text ?? '').replace(/^\uFEFF/, '');
+    const delimiter = detectCsvDelimiter(source);
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let inQuotes = false;
+
+    for (let index = 0; index < source.length; index++) {
+        const character = source[index];
+
+        if (inQuotes) {
+            if (character === '"' && source[index + 1] === '"') {
+                cell += '"';
+                index++;
+            } else if (character === '"') {
+                inQuotes = false;
+            } else {
+                cell += character;
+            }
+        } else if (character === '"' && cell === '') {
+            inQuotes = true;
+        } else if (character === delimiter && !inQuotes) {
+            row.push(cell);
+            cell = '';
+        } else if ((character === '\n' || character === '\r') && !inQuotes) {
+            if (character === '\r' && source[index + 1] === '\n') {
+                index++;
+            }
+            row.push(cell);
+            rows.push(row);
+            row = [];
+            cell = '';
+        } else {
+            cell += character;
+        }
+    }
+
+    if (cell || row.length) {
+        row.push(cell);
+        rows.push(row);
+    }
+
+    return rows;
+}
+
 async function extractLineListTagsFromFile(file) {
-    if (!window.XLSX) {
-        throw new Error('Excel parser failed to load. Refresh and try again.');
+    if (!/\.csv$/i.test(file?.name || '')) {
+        throw new Error('Only CSV line lists are supported.');
     }
 
-    const extension = (file.name.split('.').pop() || '').toLowerCase();
-    let workbook;
-
-    if (extension === 'csv') {
-        const csvText = await file.text();
-        workbook = XLSX.read(csvText, { type: 'string' });
-    } else {
-        const buffer = await file.arrayBuffer();
-        workbook = XLSX.read(buffer, { type: 'array' });
-    }
-
-    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-        throw new Error('No sheets found in the line list file.');
-    }
-
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+    const rows = parseCsvRows(await file.text());
 
     if (!rows.length) {
         throw new Error('The line list file is empty.');
@@ -2595,7 +4083,6 @@ async function extractLineListTagsFromFile(file) {
 
     return {
         fileName: file.name,
-        sheetName,
         columnLabel: columnInfo.columnLabel,
         columnIndex: columnInfo.columnIndex,
         lineHeaders,
@@ -2760,7 +4247,7 @@ function renderCompareDrawer() {
     if (exportCompareBtn) exportCompareBtn.disabled = false;
 
     if (compareDrawerMeta) {
-        compareDrawerMeta.textContent = `File: ${compareDrawerState.fileName} | Sheet: ${compareDrawerState.sheetName} | Column: ${compareDrawerState.lineColumnLabel}`;
+        compareDrawerMeta.textContent = `File: ${compareDrawerState.fileName} | Column: ${compareDrawerState.lineColumnLabel}`;
     }
 
     if (compareShowAttributesCheckbox) {
@@ -2897,13 +4384,7 @@ function jumpToTagFromCompare(normalizedTag) {
     const nextIndex = (cycleIndex + 1) % occurrences.length;
     compareDrawerState.jumpCycle.set(normalizedTag, nextIndex);
 
-    if (target.element) {
-        target.element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-        target.element.classList.add('active');
-        setTimeout(() => target.element?.classList.remove('active'), 900);
-    } else {
-        document.getElementById(`page-${target.page}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    focusPdfTag(target);
 
     showCompareAttributeOverlay(target, normalizedTag);
 }
@@ -2929,7 +4410,7 @@ async function openLineListCompareModal() {
 
     const lineListFile = lineListInput?.files?.[0];
     if (!lineListFile) {
-        showToast('Select an Excel or CSV line list first', 'warning');
+        showToast('Select a CSV line list first', 'warning');
         return;
     }
 
@@ -2950,7 +4431,6 @@ async function openLineListCompareModal() {
     const matched = Array.from(pidStats.unique).filter(tag => lineStats.unique.has(tag)).sort((a, b) => a.localeCompare(b));
 
     compareDrawerState.fileName = lineListData.fileName;
-    compareDrawerState.sheetName = lineListData.sheetName;
     compareDrawerState.lineColumnLabel = lineListData.columnLabel;
     compareDrawerState.lineColumnIndex = lineListData.columnIndex;
     compareDrawerState.lineHeaders = lineListData.lineHeaders;
@@ -2971,15 +4451,6 @@ async function openLineListCompareModal() {
     renderCompareDrawer();
     openCompareDrawer();
     hideCompareAttributeOverlay();
-}
-
-function sanitizeSheetName(name) {
-    const fallback = 'Compare';
-    const cleaned = String(name || fallback)
-        .replace(/[\\/?*[\]:]/g, ' ')
-        .trim();
-    if (!cleaned) return fallback;
-    return cleaned.slice(0, 31);
 }
 
 function buildCompareExportRows() {
@@ -3022,12 +4493,7 @@ function buildCompareExportRows() {
     return rows;
 }
 
-async function exportLineListCompareToXlsx() {
-    if (!window.XLSX) {
-        showToast('Excel export library is not available', 'error');
-        return;
-    }
-
+async function exportLineListCompareToCsv() {
     const selectedLineListName = lineListInput?.files?.[0]?.name || '';
     const compareNeedsRefresh =
         !compareDrawerState.fileName ||
@@ -3045,555 +4511,17 @@ async function exportLineListCompareToXlsx() {
         return;
     }
 
-    const worksheet = XLSX.utils.aoa_to_sheet(tableRows);
-    const workbook = XLSX.utils.book_new();
-    const sheetName = sanitizeSheetName(compareDrawerState.sheetName || 'Compare');
-    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
-
     const baseName = compareDrawerState.fileName.replace(/\.[^/.]+$/, '') || 'line_list';
-    const exportName = `${baseName}_pid_compare.xlsx`;
-    XLSX.writeFile(workbook, exportName, { bookType: 'xlsx' });
-
-    showToast(`Exported ${tableRows.length - 1} rows to ${exportName}`, 'success');
-}
-
-// ============================================
-// SYMBOL DETECTION INTEGRATION
-// ============================================
-
-// Initialize OpenCV when page loads
-document.addEventListener('DOMContentLoaded', () => {
-    // Pre-load OpenCV.js in background
-    if (window.SymbolDetector) {
-        window.SymbolDetector.loadOpenCV().then(() => {
-            console.log('OpenCV.js ready for symbol detection');
-        }).catch(err => {
-            console.warn('OpenCV.js not loaded:', err.message);
-        });
-    }
-});
-
-/**
- * Capture a symbol template from the PDF
- */
-function captureSymbolTemplate() {
-    const select = document.getElementById('symbolSelect');
-    const symbolKey = select.value;
-    
-    if (!symbolKey) {
-        showToast('Please select a symbol type first', 'warning');
-        return;
-    }
-    
-    if (!pdfDoc) {
-        showToast('Please load a PDF first', 'warning');
-        return;
-    }
-    
-    if (window.SymbolDetector) {
-        window.SymbolDetector.enableTemplateCaptureMode(symbolKey);
-    } else {
-        showToast('Symbol detector not loaded', 'error');
-    }
-}
-
-/**
- * Run symbol detection on all pages
- */
-async function runSymbolDetection() {
-    if (!window.SymbolDetector) {
-        showToast('Symbol detector not loaded', 'error');
-        return;
-    }
-    
-    // Check if we have any templates
-    const templates = window.SymbolDetector.SYMBOL_TEMPLATES;
-    let templateCount = 0;
-    for (const key in templates) {
-        templateCount += templates[key].templates.length;
-    }
-    
-    if (templateCount === 0) {
-        showToast('First capture a symbol: Select type → Draw on PDF', 'info');
-        // Highlight the capture button
-        const captureBtn = document.getElementById('capture-btn');
-        if (captureBtn) {
-            captureBtn.style.animation = 'pulse 0.5s ease 3';
-            setTimeout(() => captureBtn.style.animation = '', 1500);
-        }
-        return;
-    }
-    
-    if (!pdfDoc) {
-        showToast('Please load a PDF first', 'warning');
-        return;
-    }
-    
-    const detectBtn = document.getElementById('detect-symbols-btn');
-    const originalText = detectBtn.innerHTML;
-    detectBtn.innerHTML = '⏳ Detecting...';
-    detectBtn.disabled = true;
-    
-    // Create and show progress bar
-    const progressBar = createProgressBar();
-    
+    const exportName = `${baseName}_pid_compare.csv`;
+    const csv = tableRows.map(row => row.map(csvCell).join(',')).join('\r\n');
+    const csvBlob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+    downloadBlob(csvBlob, exportName);
     try {
-        const results = await window.SymbolDetector.detectSymbolsInAllPages(pdfWrapper, (progress) => {
-            updateProgressBar(progressBar, progress);
-        });
-        
-        // Update results display
-        updateDetectionResults(results);
-        
-        if (results.length > 0) {
-            showToast(`Found ${results.length} symbol(s)!`, 'success');
-        } else {
-            showToast('No matches found. Try adjusting the template.', 'info');
-        }
-    } catch (err) {
-        console.error('Symbol detection error:', err);
-        showToast('Detection error: ' + err.message, 'error');
-    } finally {
-        detectBtn.innerHTML = originalText;
-        detectBtn.disabled = false;
-        removeProgressBar(progressBar);
-    }
-}
-
-/**
- * Create a progress bar for symbol detection
- */
-function createProgressBar() {
-    const progressContainer = document.createElement('div');
-    progressContainer.id = 'detection-progress';
-    progressContainer.className = 'detection-progress-container';
-    progressContainer.innerHTML = `
-        <div class="progress-header">
-            <span class="progress-title">🔍 Detecting Symbols</span>
-            <span class="progress-text">Starting...</span>
-        </div>
-        <div class="progress-bar-track">
-            <div class="progress-bar-fill" style="width: 0%"></div>
-        </div>
-        <div class="progress-details">
-            <span class="progress-page">Page 0 of 0</span>
-            <span class="progress-percentage">0%</span>
-        </div>
-    `;
-    
-    // Insert progress bar into detection results area
-    const resultsContainer = document.getElementById('detection-results');
-    if (resultsContainer) {
-        resultsContainer.insertBefore(progressContainer, resultsContainer.firstChild);
-    }
-    
-    return progressContainer;
-}
-
-/**
- * Update progress bar
- */
-function updateProgressBar(progressBar, progress) {
-    if (!progressBar) return;
-    
-    const fillBar = progressBar.querySelector('.progress-bar-fill');
-    const progressText = progressBar.querySelector('.progress-text');
-    const progressPage = progressBar.querySelector('.progress-page');
-    const progressPercentage = progressBar.querySelector('.progress-percentage');
-    
-    if (fillBar) fillBar.style.width = progress.percentage + '%';
-    if (progressText) progressText.textContent = progress.message;
-    if (progressPage) progressPage.textContent = `Page ${progress.current} of ${progress.total}`;
-    if (progressPercentage) progressPercentage.textContent = progress.percentage + '%';
-}
-
-/**
- * Remove progress bar with fade out animation
- */
-function removeProgressBar(progressBar) {
-    if (!progressBar) return;
-    
-    progressBar.style.opacity = '0';
-    progressBar.style.transition = 'opacity 0.3s ease';
-    setTimeout(() => {
-        progressBar.remove();
-    }, 300);
-}
-
-/**
- * Update the template chips display
- */
-function updateTemplateStatus() {
-    const container = document.getElementById('template-status');
-    if (!container || !window.SymbolDetector) return;
-    
-    const templates = window.SymbolDetector.SYMBOL_TEMPLATES;
-    let html = '';
-    
-    for (const key in templates) {
-        const count = templates[key].templates.length;
-        if (count > 0) {
-            html += `<span class="template-chip">
-                ${templates[key].name}
-                <span class="chip-count">${count}</span>
-                <span class="chip-remove" onclick="removeTemplate('${key}')" title="Remove">×</span>
-            </span>`;
-        }
-    }
-    
-    container.innerHTML = html;
-}
-
-/**
- * Remove a specific template type
- */
-function removeTemplate(symbolKey) {
-    if (window.SymbolDetector && window.SymbolDetector.SYMBOL_TEMPLATES[symbolKey]) {
-        const templates = window.SymbolDetector.SYMBOL_TEMPLATES[symbolKey].templates;
-        templates.forEach(t => { if (t.mat) t.mat.delete(); });
-        window.SymbolDetector.SYMBOL_TEMPLATES[symbolKey].templates = [];
-        updateTemplateStatus();
-    }
-}
-
-/**
- * Update detection results display with detailed statistics
- */
-function updateDetectionResults(results) {
-    const container = document.getElementById('detection-results');
-    if (!container) return;
-    
-    if (!results || results.length === 0) {
-        container.innerHTML = '';
-        return;
-    }
-    
-    // Group by symbol type
-    const grouped = {};
-    const pageData = {};
-    
-    for (const r of results) {
-        // Group by symbol type
-        if (!grouped[r.symbolName]) {
-            grouped[r.symbolName] = { 
-                count: 0, 
-                color: r.color,
-                key: r.symbolKey,
-                detections: []
-            };
-        }
-        grouped[r.symbolName].count++;
-        grouped[r.symbolName].detections.push(r);
-        
-        // Group by page
-        if (!pageData[r.page]) {
-            pageData[r.page] = [];
-        }
-        pageData[r.page].push(r);
-    }
-    
-    // Summary header
-    let html = `
-        <div class="result-summary-header">
-            <div class="result-total">✓ Found ${results.length} symbol(s)</div>
-            <button class="btn-view-details" onclick="toggleDetailedReport()">📊 View Details</button>
-            <button class="btn-export-report" onclick="exportDetectionReport()" title="Export Report">📄</button>
-        </div>
-    `;
-    
-    // Quick summary by type
-    html += '<div class="result-quick-summary">';
-    for (const name in grouped) {
-        html += `
-            <div class="result-item" onclick="filterBySymbol('${grouped[name].key}')">
-                <span class="symbol-dot" style="background:${grouped[name].color}"></span>
-                <span class="symbol-name">${name}</span>
-                <strong class="symbol-count">${grouped[name].count}</strong>
-            </div>`;
-    }
-    html += '</div>';
-    
-    // Detailed report (hidden by default)
-    html += '<div id="detailed-report" class="detailed-report" style="display:none;">';
-    html += buildDetailedReport(grouped, pageData, results);
-    html += '</div>';
-    
-    container.innerHTML = html;
-    
-    // Store results globally for export
-    window.lastDetectionResults = results;
-}
-
-/**
- * Build detailed detection report
- */
-function buildDetailedReport(grouped, pageData, allResults) {
-    let html = '<div class="report-sections">';
-    
-    // Section 1: By Symbol Type
-    html += '<div class="report-section">';
-    html += '<h4>📦 By Symbol Type</h4>';
-    for (const name in grouped) {
-        const data = grouped[name];
-        html += `
-            <div class="symbol-detail-block">
-                <div class="symbol-detail-header">
-                    <span class="symbol-dot" style="background:${data.color}"></span>
-                    <strong>${name}</strong> (${data.count} found)
-                </div>
-                <div class="symbol-locations">
-                    ${buildSymbolLocations(data.detections)}
-                </div>
-            </div>`;
-    }
-    html += '</div>';
-    
-    // Section 2: By Page
-    html += '<div class="report-section">';
-    html += '<h4>📄 By Page</h4>';
-    const pages = Object.keys(pageData).sort((a, b) => parseInt(a) - parseInt(b));
-    for (const page of pages) {
-        const symbols = pageData[page];
-        const symbolCounts = {};
-        for (const s of symbols) {
-            symbolCounts[s.symbolName] = (symbolCounts[s.symbolName] || 0) + 1;
-        }
-        
-        html += `
-            <div class="page-detail-block">
-                <div class="page-header">
-                    <strong>Page ${page}</strong> 
-                    <span class="page-count">${symbols.length} symbol(s)</span>
-                    <button class="btn-jump-page" onclick="jumpToPage(${page})">Go →</button>
-                </div>
-                <div class="page-symbols">
-                    ${Object.entries(symbolCounts).map(([name, count]) => 
-                        `<span class="page-symbol-chip">${name} (${count})</span>`
-                    ).join('')}
-                </div>
-            </div>`;
-    }
-    html += '</div>';
-    
-    // Section 3: Confidence Analysis
-    html += '<div class="report-section">';
-    html += '<h4>🎯 Confidence Analysis</h4>';
-    html += buildConfidenceAnalysis(allResults);
-    html += '</div>';
-    
-    html += '</div>'; // close report-sections
-    return html;
-}
-
-/**
- * Build symbol locations list
- */
-function buildSymbolLocations(detections) {
-    if (detections.length === 0) return '';
-    
-    // Group by page
-    const byPage = {};
-    for (const d of detections) {
-        if (!byPage[d.page]) byPage[d.page] = [];
-        byPage[d.page].push(d);
-    }
-    
-    let html = '<div class="location-list">';
-    for (const page in byPage) {
-        const items = byPage[page];
-        html += `
-            <div class="location-item">
-                <span class="location-page" onclick="jumpToPage(${page})">Page ${page}</span>
-                <span class="location-count">${items.length}×</span>
-                <span class="location-confidence">${getAverageConfidence(items)}% avg</span>
-            </div>`;
-    }
-    html += '</div>';
-    return html;
-}
-
-/**
- * Build confidence analysis
- */
-function buildConfidenceAnalysis(results) {
-    if (results.length === 0) return '<p>No data</p>';
-    
-    // Calculate confidence stats
-    const confidences = results.map(r => r.confidence * 100);
-    const avg = confidences.reduce((a, b) => a + b, 0) / confidences.length;
-    const min = Math.min(...confidences);
-    const max = Math.max(...confidences);
-    
-    // Categorize by confidence level
-    const high = results.filter(r => r.confidence >= 0.85).length;
-    const medium = results.filter(r => r.confidence >= 0.70 && r.confidence < 0.85).length;
-    const low = results.filter(r => r.confidence < 0.70).length;
-    
-    let html = `
-        <div class="confidence-stats">
-            <div class="stat-row">
-                <span>Average Confidence:</span>
-                <strong>${avg.toFixed(1)}%</strong>
-            </div>
-            <div class="stat-row">
-                <span>Range:</span>
-                <strong>${min.toFixed(1)}% - ${max.toFixed(1)}%</strong>
-            </div>
-        </div>
-        <div class="confidence-breakdown">
-            <div class="confidence-bar">
-                <div class="conf-segment conf-high" style="width: ${(high/results.length)*100}%">
-                    <span class="conf-label">${high} High (≥85%)</span>
-                </div>
-                <div class="conf-segment conf-medium" style="width: ${(medium/results.length)*100}%">
-                    <span class="conf-label">${medium} Med (70-85%)</span>
-                </div>
-                <div class="conf-segment conf-low" style="width: ${(low/results.length)*100}%">
-                    <span class="conf-label">${low} Low (<70%)</span>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    return html;
-}
-
-/**
- * Get average confidence for a list of detections
- */
-function getAverageConfidence(detections) {
-    if (detections.length === 0) return 0;
-    const sum = detections.reduce((acc, d) => acc + (d.confidence * 100), 0);
-    return (sum / detections.length).toFixed(0);
-}
-
-/**
- * Toggle detailed report visibility
- */
-function toggleDetailedReport() {
-    const report = document.getElementById('detailed-report');
-    if (!report) return;
-    
-    const isVisible = report.style.display !== 'none';
-    report.style.display = isVisible ? 'none' : 'block';
-    
-    const btn = document.querySelector('.btn-view-details');
-    if (btn) {
-        btn.textContent = isVisible ? '📊 View Details' : '📊 Hide Details';
-    }
-}
-
-/**
- * Jump to a specific page
- */
-function jumpToPage(pageNumber) {
-    const pageContainer = document.querySelector(`.pdf-page[data-page-number="${pageNumber}"]`);
-    if (pageContainer) {
-        pageContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        
-        // Flash effect
-        pageContainer.style.transition = 'background 0.3s';
-        pageContainer.style.background = 'rgba(102, 126, 234, 0.1)';
-        setTimeout(() => {
-            pageContainer.style.background = '';
-        }, 1000);
-        
-        showToast(`Jumped to page ${pageNumber}`, 'info');
-    }
-}
-
-/**
- * Filter symbols by type
- */
-function filterBySymbol(symbolKey) {
-    if (!window.SymbolDetector) return;
-    
-    // Toggle filter - if clicking the same symbol, clear filter
-    if (window.currentSymbolFilter === symbolKey) {
-        window.currentSymbolFilter = null;
-        window.SymbolDetector.clearSymbolHighlights();
-        showToast('Filter cleared', 'info');
-    } else {
-        window.currentSymbolFilter = symbolKey;
-        // Hide other symbols, show only this one
-        const overlays = document.querySelectorAll('.symbol-overlay');
-        overlays.forEach(overlay => {
-            const key = overlay.dataset.symbolKey;
-            if (key === symbolKey) {
-                overlay.style.display = 'block';
-            } else {
-                overlay.style.display = 'none';
-            }
-        });
-        showToast(`Showing only ${symbolKey}`, 'info');
-    }
-}
-
-/**
- * Export detection report
- */
-function exportDetectionReport() {
-    if (!window.lastDetectionResults || window.lastDetectionResults.length === 0) {
-        showToast('No detection results to export', 'warning');
-        return;
-    }
-    
-    const results = window.lastDetectionResults;
-    const timestamp = new Date().toISOString().split('T')[0];
-    const pdfName = window.currentPDFName || 'document';
-    
-    // Generate CSV content
-    let csv = 'Symbol Type,Page,X,Y,Width,Height,Confidence\n';
-    for (const r of results) {
-        csv += `"${r.symbolName}",${r.page},${r.x},${r.y},${r.width},${r.height},${(r.confidence * 100).toFixed(1)}%\n`;
-    }
-    
-    // Create download
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${pdfName}_symbol_report_${timestamp}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    
-    showToast('✓ Report exported', 'success');
-}
-
-/**
- * Start custom symbol capture
- */
-function startCustomCapture() {
-    if (!window.SymbolDetector) {
-        showToast('Symbol detector not loaded', 'error');
-        return;
-    }
-    
-    if (!pdfDoc) {
-        showToast('Please load a PDF first', 'warning');
-        return;
-    }
-    
-    // Generate a unique key based on timestamp
-    const timestamp = Date.now();
-    const symbolKey = `symbol_${timestamp}`;
-    const symbolName = `Symbol ${new Date().toLocaleTimeString()}`;
-    
-    window.SymbolDetector.enableTemplateCaptureMode(symbolKey, symbolName);
-}
-
-/**
- * Clear all symbol data
- */
-function clearSymbolData() {
-    if (window.SymbolDetector) {
-        window.SymbolDetector.clearSymbolDetection();
-        updateTemplateStatus();
-        const resultsContainer = document.getElementById('detection-results');
-        if (resultsContainer) resultsContainer.innerHTML = '';
-        window.lastDetectionResults = null;
-        window.currentSymbolFilter = null;
-        showToast('Cleared all templates and results', 'info');
+        const savedToFolder = await saveProjectArtifact(csvBlob, '03_Reports', exportName, 'report');
+        showToast(`Exported ${tableRows.length - 1} rows to ${exportName}${savedToFolder ? ' and saved to project Reports' : ''}`, 'success');
+    } catch (error) {
+        console.warn('Could not save compare report to project folder', error);
+        showToast(`Exported ${tableRows.length - 1} rows to ${exportName}`, 'success');
     }
 }
 
@@ -3659,426 +4587,5 @@ toastStyles.textContent = `
     @keyframes fadeOut {
         to { opacity: 0; transform: translateX(-50%) translateY(-10px); }
     }
-    @keyframes pulse {
-        0%, 100% { transform: scale(1); }
-        50% { transform: scale(1.05); box-shadow: 0 0 10px rgba(102, 126, 234, 0.5); }
-    }
 `;
 document.head.appendChild(toastStyles);
-
-// Update template status periodically (to catch captures from overlay)
-setInterval(() => {
-    updateTemplateStatus();
-}, 1000);
-
-// ============================================
-// PREDEFINED SYMBOL LOADERS
-// ============================================
-
-/**
- * Load all valve preset symbols
- */
-async function loadPresetValves() {
-    if (!window.PredefinedSymbols) {
-        showToast('Predefined symbols not loaded', 'error');
-        return;
-    }
-    
-    const btn = event?.target;
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '⏳ Loading...';
-    }
-    
-    try {
-        showToast('Loading valve templates...', 'info');
-        const result = await window.PredefinedSymbols.loadAllValves();
-        updateTemplateStatus();
-        showToast(`Loaded ${result.loaded.length} valve types!`, 'success');
-    } catch (err) {
-        console.error('Failed to load valve presets:', err);
-        showToast('Failed to load presets', 'error');
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '🔧 All Valves';
-        }
-    }
-}
-
-/**
- * Load equipment preset symbols
- */
-async function loadPresetEquipment() {
-    if (!window.PredefinedSymbols) {
-        showToast('Predefined symbols not loaded', 'error');
-        return;
-    }
-    
-    const btn = event?.target;
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '⏳ Loading...';
-    }
-    
-    try {
-        showToast('Loading equipment templates...', 'info');
-        const result = await window.PredefinedSymbols.loadCommonEquipment();
-        updateTemplateStatus();
-        showToast(`Loaded ${result.loaded.length} equipment types!`, 'success');
-    } catch (err) {
-        console.error('Failed to load equipment presets:', err);
-        showToast('Failed to load presets', 'error');
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '⚙️ Equipment';
-        }
-    }
-}
-
-/**
- * Show the symbol library modal
- */
-function showSymbolLibrary() {
-    if (!window.PredefinedSymbols) {
-        showToast('Symbol library not loaded', 'error');
-        return;
-    }
-    
-    // Create modal
-    const modal = document.createElement('div');
-    modal.id = 'symbol-library-modal';
-    modal.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0,0,0,0.6);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 20000;
-    `;
-    
-    const symbols = window.PredefinedSymbols.getAvailablePredefinedSymbols();
-    
-    // Group by category
-    const categories = {};
-    for (const sym of symbols) {
-        const cat = sym.name.includes('Valve') ? 'Valves' : 
-                    sym.name.includes('Actuator') ? 'Actuators' :
-                    ['Pump', 'Motor', 'Heat Exchanger', 'Strainer'].some(e => sym.name.includes(e)) ? 'Equipment' :
-                    'Other';
-        if (!categories[cat]) categories[cat] = [];
-        categories[cat].push(sym);
-    }
-    
-    let gridHtml = '';
-    for (const [cat, items] of Object.entries(categories)) {
-        gridHtml += `<div class="library-category"><h4>${cat}</h4><div class="library-grid">`;
-        for (const sym of items) {
-            const svgData = window.PredefinedSymbols.PREDEFINED_SYMBOLS[sym.key]?.svg || '';
-            gridHtml += `
-                <div class="library-item" data-key="${sym.key}" onclick="loadSymbolFromLibrary('${sym.key}')">
-                    <div class="library-preview">${svgData}</div>
-                    <div class="library-name">${sym.name}</div>
-                </div>
-            `;
-        }
-        gridHtml += '</div></div>';
-    }
-    
-    modal.innerHTML = `
-        <div class="library-dialog">
-            <div class="library-header">
-                <h3>📚 Symbol Library</h3>
-                <button class="btn-close" onclick="closeSymbolLibrary()">✕</button>
-            </div>
-            <p class="library-hint">Click a symbol to load it as a template</p>
-            <div class="library-content">
-                ${gridHtml}
-            </div>
-            <div class="library-footer">
-                <button class="btn btn-secondary" onclick="loadAllFromLibrary()">Load All</button>
-                <button class="btn btn-primary" onclick="closeSymbolLibrary()">Done</button>
-            </div>
-        </div>
-    `;
-    
-    document.body.appendChild(modal);
-    
-    // Add styles for modal
-    if (!document.getElementById('library-styles')) {
-        const styles = document.createElement('style');
-        styles.id = 'library-styles';
-        styles.textContent = `
-            .library-dialog {
-                background: white;
-                border-radius: 12px;
-                width: 90%;
-                max-width: 700px;
-                max-height: 80vh;
-                display: flex;
-                flex-direction: column;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-            }
-            .library-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 16px 20px;
-                border-bottom: 1px solid #e5e7eb;
-            }
-            .library-header h3 {
-                margin: 0;
-                font-size: 18px;
-            }
-            .btn-close {
-                background: none;
-                border: none;
-                font-size: 20px;
-                cursor: pointer;
-                color: #6b7280;
-                padding: 4px 8px;
-            }
-            .btn-close:hover { color: #111; }
-            .library-hint {
-                margin: 0;
-                padding: 10px 20px;
-                background: #f0f9ff;
-                color: #0369a1;
-                font-size: 13px;
-            }
-            .library-content {
-                flex: 1;
-                overflow-y: auto;
-                padding: 15px 20px;
-            }
-            .library-category h4 {
-                margin: 15px 0 10px;
-                color: #374151;
-                font-size: 14px;
-                border-bottom: 1px solid #e5e7eb;
-                padding-bottom: 5px;
-            }
-            .library-category:first-child h4 {
-                margin-top: 0;
-            }
-            .library-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-                gap: 10px;
-            }
-            .library-item {
-                border: 2px solid #e5e7eb;
-                border-radius: 8px;
-                padding: 10px;
-                text-align: center;
-                cursor: pointer;
-                transition: all 0.2s ease;
-            }
-            .library-item:hover {
-                border-color: #3b82f6;
-                background: #eff6ff;
-                transform: translateY(-2px);
-            }
-            .library-item.loaded {
-                border-color: #10b981;
-                background: #ecfdf5;
-            }
-            .library-item.loaded::after {
-                content: '✓';
-                position: absolute;
-                top: 5px;
-                right: 5px;
-                color: #10b981;
-                font-weight: bold;
-            }
-            .library-preview {
-                height: 40px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .library-preview svg {
-                max-width: 100%;
-                max-height: 100%;
-            }
-            .library-name {
-                font-size: 11px;
-                color: #374151;
-                margin-top: 6px;
-                line-height: 1.2;
-            }
-            .library-footer {
-                padding: 15px 20px;
-                border-top: 1px solid #e5e7eb;
-                display: flex;
-                justify-content: flex-end;
-                gap: 10px;
-            }
-        `;
-        document.head.appendChild(styles);
-    }
-}
-
-/**
- * Load a single symbol from the library
- */
-async function loadSymbolFromLibrary(symbolKey) {
-    if (!window.PredefinedSymbols) return;
-    
-    const item = document.querySelector(`.library-item[data-key="${symbolKey}"]`);
-    if (item) {
-        item.style.opacity = '0.5';
-    }
-    
-    try {
-        await window.PredefinedSymbols.loadPredefinedSymbol(symbolKey);
-        if (item) {
-            item.classList.add('loaded');
-            item.style.opacity = '1';
-        }
-        updateTemplateStatus();
-        showToast(`Loaded ${window.PredefinedSymbols.PREDEFINED_SYMBOLS[symbolKey]?.name}`, 'success');
-    } catch (err) {
-        console.error('Failed to load symbol:', err);
-        if (item) item.style.opacity = '1';
-        showToast('Failed to load symbol', 'error');
-    }
-}
-
-/**
- * Load all symbols from library
- */
-async function loadAllFromLibrary() {
-    if (!window.PredefinedSymbols) return;
-    
-    showToast('Loading all symbols...', 'info');
-    
-    const symbols = window.PredefinedSymbols.getAvailablePredefinedSymbols();
-    let loaded = 0;
-    
-    for (const sym of symbols) {
-        try {
-            await window.PredefinedSymbols.loadPredefinedSymbol(sym.key);
-            const item = document.querySelector(`.library-item[data-key="${sym.key}"]`);
-            if (item) item.classList.add('loaded');
-            loaded++;
-        } catch (err) {
-            console.warn(`Failed to load ${sym.key}`);
-        }
-    }
-    
-    updateTemplateStatus();
-    showToast(`Loaded ${loaded} symbols!`, 'success');
-}
-
-/**
- * Close the symbol library modal
- */
-function closeSymbolLibrary() {
-    const modal = document.getElementById('symbol-library-modal');
-    if (modal) modal.remove();
-}
-
-/**
- * Show the upload symbols dialog
- */
-function showUploadSymbols() {
-    if (window.PredefinedSymbols && window.PredefinedSymbols.showImageUploadDialog) {
-        window.PredefinedSymbols.showImageUploadDialog();
-    } else {
-        showToast('Upload feature not available', 'error');
-    }
-}
-
-// ============================================
-// SYMBOL LIBRARY (from /symbols folder)
-// ============================================
-
-/**
- * Load valve symbols from the /symbols folder
- */
-async function loadLibraryValves() {
-    if (!window.SymbolLibrary) {
-        showToast('Symbol library not loaded', 'error');
-        return;
-    }
-    
-    const btn = event?.target;
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '⏳ Loading...';
-    }
-    
-    try {
-        showToast('Loading valve symbols from library...', 'info');
-        const result = await window.SymbolLibrary.loadAllLibraryValves();
-        updateTemplateStatus();
-        
-        if (result.loaded.length > 0) {
-            showToast(`✓ Loaded ${result.loaded.length} valve(s)!`, 'success');
-        } else {
-            showToast('No valve symbols found in /symbols folder', 'warning');
-        }
-    } catch (err) {
-        console.error('Failed to load library valves:', err);
-        showToast('Failed to load symbols', 'error');
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '🔧 Valves';
-        }
-    }
-}
-
-/**
- * Load equipment symbols from the /symbols folder
- */
-async function loadLibraryEquipment() {
-    if (!window.SymbolLibrary) {
-        showToast('Symbol library not loaded', 'error');
-        return;
-    }
-    
-    const btn = event?.target;
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '⏳ Loading...';
-    }
-    
-    try {
-        showToast('Loading equipment symbols from library...', 'info');
-        const result = await window.SymbolLibrary.loadAllLibraryEquipment();
-        updateTemplateStatus();
-        
-        if (result.loaded.length > 0) {
-            showToast(`✓ Loaded ${result.loaded.length} equipment item(s)!`, 'success');
-        } else {
-            showToast('No equipment symbols found in /symbols folder', 'warning');
-        }
-    } catch (err) {
-        console.error('Failed to load library equipment:', err);
-        showToast('Failed to load symbols', 'error');
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '⚙️ Equipment';
-        }
-    }
-}
-
-/**
- * Browse all symbols in the library
- */
-function browseSymbolLibrary() {
-    if (!window.SymbolLibrary) {
-        showToast('Symbol library not loaded', 'error');
-        return;
-    }
-    
-    window.SymbolLibrary.showLibraryBrowser();
-}
